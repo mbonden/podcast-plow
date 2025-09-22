@@ -8,11 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+SERVER_ROOT = ROOT / "server"
+if str(SERVER_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVER_ROOT))
+
 import pytest
 from fastapi.testclient import TestClient
 
 import server.app as app_module
 from tests.fake_db import FakeConnection, FakeDatabase
+
+
+TRANSCRIPT_TEXT_BY_EPISODE = {
+    1: "Full transcript text",
+    2: "Episode 2 transcript contains SECRET_SAUNA",
+    3: "Episode 3 transcript mentions SECRET_MAGNESIUM",
+}
+
+ADDITIONAL_EPISODE_SQL = [
+    "INSERT INTO episode (id, podcast_id, title) VALUES (2, 1, 'Metabolic Morning Show 002');",
+    "INSERT INTO episode (id, podcast_id, title) VALUES (3, 1, 'Brain and Body Chat 015');",
+]
 
 
 def load_statements() -> List[str]:
@@ -46,14 +62,19 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> FakeDatabase:
 @pytest.fixture
 def seeded_client(fake_db: FakeDatabase) -> Iterable[TestClient]:
     statements = load_statements()
-    transcript_sql = "INSERT INTO transcript (episode_id, source, lang, text) VALUES (1, 'upload', 'en', 'Full transcript text');"
 
     with TestClient(app_module.app) as client:
         with app_module.db_conn() as conn:
             cur = conn.cursor()
             for stmt in statements:
                 cur.execute(stmt)
-            cur.execute(transcript_sql)
+            for stmt in ADDITIONAL_EPISODE_SQL:
+                cur.execute(stmt)
+            for episode_id, transcript_text in TRANSCRIPT_TEXT_BY_EPISODE.items():
+                cur.execute(
+                    "INSERT INTO transcript (episode_id, source, lang, text) "
+                    f"VALUES ({episode_id}, 'upload', 'en', '{transcript_text}')"
+                )
         yield client
 
 
@@ -68,6 +89,22 @@ def test_episode_endpoint_hides_transcript(seeded_client: TestClient) -> None:
 
     grades = {item["id"]: item["grade"] for item in data.get("claims", [])}
     assert grades.get(1) == "moderate"
+
+
+@pytest.mark.parametrize(
+    ("episode_id", "transcript_text"),
+    sorted(TRANSCRIPT_TEXT_BY_EPISODE.items()),
+)
+def test_episode_endpoint_omits_transcript_text(
+    seeded_client: TestClient, episode_id: int, transcript_text: str
+) -> None:
+    response = seeded_client.get(f"/episodes/{episode_id}")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["id"] == episode_id
+    assert "transcript" not in payload
+    assert transcript_text not in response.text
 
 
 def test_claim_endpoints_return_seed_data(seeded_client: TestClient) -> None:

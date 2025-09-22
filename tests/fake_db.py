@@ -327,6 +327,7 @@ class FakeDatabase:
                     claim.get("normalized_text"),
                     claim.get("domain"),
                     latest.get("grade") if latest else None,
+                    latest.get("rationale") if latest else None,
                 )
             )
         return rows
