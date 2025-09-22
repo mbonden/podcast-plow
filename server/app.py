@@ -73,7 +73,7 @@ def get_topic_claims(topic: str):
                 FROM claim_grade
                 ORDER BY claim_id, created_at DESC
             )
-            SELECT c.id, e.id as episode_id, e.title, c.raw_text, c.normalized_text, c.domain, lg.grade
+            SELECT c.id, e.id as episode_id, e.title, c.raw_text, c.normalized_text, c.domain, lg.grade, lg.rationale
             FROM claim c
             JOIN episode e ON e.id = c.episode_id
             LEFT JOIN latest_grade lg ON lg.claim_id = c.id
@@ -90,6 +90,7 @@ def get_topic_claims(topic: str):
                 "normalized_text": r[4],
                 "domain": r[5],
                 "grade": r[6],
+                "grade_rationale": r[7],
             })
         return {"topic": topic, "claims": items}
 
