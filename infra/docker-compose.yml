@@ -1,0 +1,30 @@
+version: "3.9"
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: podcast_plow_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: podcast_plow
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./initdb:/docker-entrypoint-initdb.d
+      - db_data:/var/lib/postgresql/data
+  server:
+    image: python:3.11-slim
+    container_name: podcast_plow_server
+    depends_on:
+      - db
+    working_dir: /app
+    command: bash -lc "pip install --no-cache-dir fastapi uvicorn[standard] psycopg[binary] pydantic==2.* python-dotenv && uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ../server:/app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
+    ports:
+      - "8000:8000"
+volumes:
+  db_data:
