@@ -14,17 +14,35 @@ services:
       - ./initdb:/docker-entrypoint-initdb.d
       - db_data:/var/lib/postgresql/data
   server:
-    image: python:3.11-slim
+    build:
+      context: ../server
     container_name: podcast_plow_server
     depends_on:
       - db
     working_dir: /app
-    command: bash -lc "pip install --no-cache-dir fastapi uvicorn[standard] psycopg[binary] pydantic==2.* python-dotenv && uvicorn app:app --host 0.0.0.0 --port 8000 --reload"
+    entrypoint:
+      - /usr/bin/env
     volumes:
       - ../server:/app
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
     ports:
       - "8000:8000"
+  ingest:
+    build:
+      context: ../server
+    container_name: podcast_plow_ingest
+    depends_on:
+      - db
+    working_dir: /app
+    entrypoint:
+      - /usr/bin/env
+    command:
+      - sleep
+      - infinity
+    volumes:
+      - ../server:/app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
 volumes:
   db_data:

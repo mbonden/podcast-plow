@@ -1,0 +1,3 @@
+# Local snapshots of real podcast feeds (network access blocked in CI)
+file:///workspace/podcast-plow/infra/sample_feeds/huberman.xml
+file:///workspace/podcast-plow/infra/sample_feeds/tim-ferriss.xml

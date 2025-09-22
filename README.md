@@ -18,6 +18,11 @@ Check health:
 curl http://localhost:8000/healthz
 ```
 
+Auto-grade all claims (creates versioned `claim_grade` rows):
+```
+python -m worker.auto_grade
+```
+
 Open API docs:
 - http://localhost:8000/docs
 - http://localhost:8000/redoc
