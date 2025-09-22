@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>The Tim Ferriss Show</title>
+    <link>https://tim.blog/podcast/</link>
+    <description>Interviews with world-class performers.</description>
+    <item>
+      <title>Dom D’Agostino — Metabolic Strategies</title>
+      <guid>tfs-001</guid>
+      <pubDate>Mon, 12 Aug 2024 09:00:00 GMT</pubDate>
+      <description><![CDATA[Dom discusses ketosis, oxygen toxicity, and pragmatic protocols.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/tfs-dom-dagostino.html</link>
+      <enclosure url="https://example.com/audio/tfs-dom.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>02:11:23</itunes:duration>
+    </item>
+    <item>
+      <title>Whitney Wolfe Herd — Scaling with Purpose</title>
+      <guid>tfs-002</guid>
+      <pubDate>Mon, 29 Jul 2024 09:00:00 GMT</pubDate>
+      <description><![CDATA[Whitney talks about community, customer discovery, and leadership.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/tfs-whitney-wolfe.html</link>
+      <enclosure url="https://example.com/audio/tfs-whitney.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>01:47:52</itunes:duration>
+    </item>
+    <item>
+      <title>James Clear — Habits in Hard Times</title>
+      <guid>tfs-003</guid>
+      <pubDate>Mon, 15 Jul 2024 09:00:00 GMT</pubDate>
+      <description><![CDATA[James revisits habit formation, identity, and friction audits.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/tfs-james-clear.html</link>
+      <enclosure url="https://example.com/audio/tfs-james.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>01:34:10</itunes:duration>
+    </item>
+    <item>
+      <title>Dr. Rhonda Patrick — Longevity Levers</title>
+      <guid>tfs-004</guid>
+      <pubDate>Mon, 01 Jul 2024 09:00:00 GMT</pubDate>
+      <description><![CDATA[Rhonda dives into micronutrients, sauna science, and stress exposure.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/tfs-rhonda-patrick.html</link>
+      <enclosure url="https://example.com/audio/tfs-rhonda.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>02:04:19</itunes:duration>
+    </item>
+    <item>
+      <title>Kevin Kelly — Excellent Advice</title>
+      <guid>tfs-005</guid>
+      <pubDate>Mon, 17 Jun 2024 09:00:00 GMT</pubDate>
+      <description><![CDATA[Kevin shares maxims about creativity, technology optimism, and humility.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/tfs-kevin-kelly.html</link>
+      <enclosure url="https://example.com/audio/tfs-kevin.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>01:58:45</itunes:duration>
+    </item>
+  </channel>
+</rss>
