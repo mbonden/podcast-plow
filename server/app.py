@@ -1,15 +1,15 @@
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import os
-import psycopg
+
+from core.db import db_connection
+
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/podcast_plow")
 
 def db_conn():
-    return psycopg.connect(DATABASE_URL, autocommit=True)
+    return db_connection()
 
 class EpisodeSummary(BaseModel):
     episode_id: int

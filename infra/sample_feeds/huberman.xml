@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Huberman Lab</title>
+    <link>https://www.hubermanlab.com/podcast</link>
+    <description>Discussions on neuroscience, performance, and health.</description>
+    <item>
+      <title>Science of Deep Rest</title>
+      <guid>huberman-001</guid>
+      <pubDate>Mon, 05 Aug 2024 07:00:00 GMT</pubDate>
+      <description><![CDATA[Andrew shares NSDR protocols, naps, and sleep timing.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/huberman-nsdr.html</link>
+      <enclosure url="https://example.com/audio/huberman-nsdr.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>01:58:12</itunes:duration>
+    </item>
+    <item>
+      <title>Training for Longevity</title>
+      <guid>huberman-002</guid>
+      <pubDate>Mon, 22 Jul 2024 07:00:00 GMT</pubDate>
+      <description><![CDATA[Strength, VO2max, and flexibility programming.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/huberman-longevity.html</link>
+      <enclosure url="https://example.com/audio/huberman-longevity.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>02:21:44</itunes:duration>
+    </item>
+    <item>
+      <title>Tools for Focus</title>
+      <guid>huberman-003</guid>
+      <pubDate>Mon, 08 Jul 2024 07:00:00 GMT</pubDate>
+      <description><![CDATA[Layered tools for attention: light, breath, pharmacology.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/huberman-focus.html</link>
+      <enclosure url="https://example.com/audio/huberman-focus.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>02:14:33</itunes:duration>
+    </item>
+    <item>
+      <title>Understanding Dopamine</title>
+      <guid>huberman-004</guid>
+      <pubDate>Mon, 24 Jun 2024 07:00:00 GMT</pubDate>
+      <description><![CDATA[Dopamine peaks, troughs, and habit loops.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/huberman-dopamine.html</link>
+      <enclosure url="https://example.com/audio/huberman-dopamine.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>02:05:05</itunes:duration>
+    </item>
+    <item>
+      <title>Protocols for Cold Exposure</title>
+      <guid>huberman-005</guid>
+      <pubDate>Mon, 10 Jun 2024 07:00:00 GMT</pubDate>
+      <description><![CDATA[Hormesis, deliberate cold, and safety considerations.]]></description>
+      <link>file:///workspace/podcast-plow/infra/show_pages/huberman-cold.html</link>
+      <enclosure url="https://example.com/audio/huberman-cold.mp3" type="audio/mpeg" length="123" />
+      <itunes:duration>01:49:22</itunes:duration>
+    </item>
+  </channel>
+</rss>
