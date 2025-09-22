@@ -73,3 +73,8 @@ VALUES
     (34, 3, 64500, 70000, 'The speaker maintains that they finish by saying that consistent wake times strengthen circadian alignment.', 'the speaker maintains that they finish by saying that consistent wake times strengthen circadian alignment', 'circadian_rhythm', 'sleep', 'medium')
 ON CONFLICT (id) DO NOTHING;
 
+
+SELECT setval('podcast_id_seq', COALESCE((SELECT MAX(id) FROM podcast), 0), true);
+SELECT setval('episode_id_seq', COALESCE((SELECT MAX(id) FROM episode), 0), true);
+SELECT setval('transcript_id_seq', COALESCE((SELECT MAX(id) FROM transcript), 0), true);
+SELECT setval('claim_id_seq', COALESCE((SELECT MAX(id) FROM claim), 0), true);
