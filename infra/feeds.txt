@@ -1,3 +1,7 @@
-# Local snapshots of real podcast feeds (network access blocked in CI)
-file:///workspace/podcast-plow/infra/sample_feeds/huberman.xml
-file:///workspace/podcast-plow/infra/sample_feeds/tim-ferriss.xml
+https://rss.art19.com/tim-ferriss-show
+https://feeds.megaphone.fm/thediaryofaceo
+https://feeds.megaphone.fm/hubermanlab
+https://peterattiadrive.libsyn.com/rss
+https://lexfridman.com/feed/podcast/
+https://foundmyfitness.libsyn.com/rss
+https://www.richroll.com/?feed=podcast

@@ -8,6 +8,7 @@ in-memory substitute that understands the handful of SQL statements used in
 the API handlers and seed data.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -181,6 +182,8 @@ class FakeDatabase:
             "claim_evidence": [],
             "claim_grade": [],
             "transcript": [],
+            "transcript_chunk": [],
+            "job_queue": [],
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -190,6 +193,8 @@ class FakeDatabase:
             "evidence_source": 1,
             "claim_grade": 1,
             "transcript": 1,
+            "transcript_chunk": 1,
+            "job_queue": 1,
         }
         self._insert_order = 0
         self._clock = 0
@@ -236,6 +241,7 @@ class FakeDatabase:
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
 
+
         if normalized.startswith(
             "select count(*) from claim_evidence where claim_id = %s and stance is not null"
         ):
@@ -268,11 +274,13 @@ class FakeDatabase:
             for row in self.tables["claim_evidence"]:
                 if row.get("claim_id") == claim_id and row.get("evidence_id") == evidence_id:
                     return [(row.get("stance"), row.get("notes"))]
+
             return []
 
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
+
 
     def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         table, rows = parse_insert(sql)
@@ -314,6 +322,18 @@ class FakeDatabase:
 
         if table == "claim_grade":
             processed.setdefault("rubric_version", "v1")
+
+        if table == "transcript_chunk":
+            processed.setdefault("created_at", self._tick())
+
+        if table == "job_queue":
+            processed.setdefault("status", "queued")
+            processed.setdefault("priority", 0)
+            processed.setdefault("attempts", 0)
+            processed.setdefault("max_attempts", 3)
+            processed.setdefault("run_at", self._tick())
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", self._tick())
 
         self.tables[table].append(processed)
         return processed
@@ -437,6 +457,7 @@ class FakeDatabase:
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
 
+
     def _select_claim_rows(
         self, normalized: str, params: Sequence[Any]
     ) -> List[Tuple[Any, ...]]:
@@ -457,6 +478,7 @@ class FakeDatabase:
         return [
             (c.get("id"), c.get("normalized_text"), c.get("raw_text"))
             for c in claims
+
         ]
 
 
