@@ -9,6 +9,7 @@ the API handlers and seed data.
 """
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 
@@ -17,6 +18,23 @@ NOW_SENTINEL = object()
 
 def _normalize_sql(sql: str) -> str:
     return " ".join(sql.strip().lower().split())
+
+
+def _ilike_match(value: str, pattern: str) -> bool:
+    if value is None or pattern is None:
+        return False
+
+    regex_parts: List[str] = []
+    for ch in pattern:
+        if ch == "%":
+            regex_parts.append(".*")
+        elif ch == "_":
+            regex_parts.append(".")
+        else:
+            regex_parts.append(re.escape(ch))
+
+    regex = "".join(regex_parts)
+    return re.fullmatch(regex, value, re.IGNORECASE) is not None
 
 
 def _split_value_tuples(values_part: str) -> List[str]:
@@ -232,6 +250,44 @@ class FakeDatabase:
 
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
+
+        if normalized.startswith("select id, title from episode where title ilike %s"):
+            pattern = params[0]
+            matches = [
+                episode
+                for episode in self.tables["episode"]
+                if _ilike_match(episode.get("title", ""), pattern)
+            ]
+
+            matches.sort(
+                key=lambda episode: (
+                    0 if episode.get("published_at") is not None else 1,
+                    -(episode.get("published_at") or 0),
+                    -episode.get("id", 0),
+                )
+            )
+
+            limited = matches[:20]
+            return [(episode.get("id"), episode.get("title")) for episode in limited]
+
+        if normalized.startswith("select id, raw_text, topic from claim where raw_text ilike %s"):
+            pattern = params[0]
+            matches = [
+                claim
+                for claim in self.tables["claim"]
+                if _ilike_match(claim.get("raw_text", ""), pattern)
+            ]
+
+            matches.sort(key=lambda claim: -claim.get("id", 0))
+            limited = matches[:20]
+            return [
+                (
+                    claim.get("id"),
+                    claim.get("raw_text"),
+                    claim.get("topic"),
+                )
+                for claim in limited
+            ]
 
         if normalized.startswith("select id from evidence_source where pubmed_id = %s"):
             pubmed_id = params[0]
