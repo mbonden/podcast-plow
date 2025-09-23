@@ -146,6 +146,12 @@ class FakeCursor:
         self._index = len(self._rows)
         return list(remaining)
 
+    def __enter__(self) -> "FakeCursor":  # pragma: no cover - convenience
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - convenience
+        return False
+
 
 class FakeConnection:
     def __init__(self, db: "FakeDatabase") -> None:
@@ -196,7 +202,9 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            self._handle_insert(stripped)
+            inserted_rows = self._handle_insert(stripped, params)
+            if "returning id" in normalized:
+                return [(row.get("id"),) for row in inserted_rows]
             return []
 
         if "from episode where id = %s" in normalized:
@@ -216,6 +224,9 @@ class FakeDatabase:
         if normalized.startswith("with latest_grade as") and "where c.episode_id = %s" in normalized:
             return self._select_episode_claims(params[0])
 
+        if normalized.startswith("select id, normalized_text, raw_text from claim"):
+            return self._select_claim_rows(normalized, params)
+
         if normalized.startswith("with latest_grade as") and "where c.topic = %s" in normalized:
             return self._select_topic_claims(params[0])
 
@@ -225,16 +236,62 @@ class FakeDatabase:
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
 
+        if normalized.startswith(
+            "select count(*) from claim_evidence where claim_id = %s and stance is not null"
+        ):
+            claim_id = params[0]
+            count = sum(
+                1
+                for row in self.tables["claim_evidence"]
+                if row.get("claim_id") == claim_id and row.get("stance") is not None
+            )
+            return [(count,)]
+
+        if normalized.startswith("select id from evidence_source where pubmed_id = %s"):
+            pubmed_id = params[0]
+            for row in self.tables["evidence_source"]:
+                if row.get("pubmed_id") == pubmed_id:
+                    return [(row.get("id"),)]
+            return []
+
+        if normalized.startswith("select id from evidence_source where doi = %s"):
+            doi = params[0]
+            for row in self.tables["evidence_source"]:
+                if row.get("doi") == doi:
+                    return [(row.get("id"),)]
+            return []
+
+        if normalized.startswith(
+            "select stance, notes from claim_evidence where claim_id = %s and evidence_id = %s"
+        ):
+            claim_id, evidence_id = params
+            for row in self.tables["claim_evidence"]:
+                if row.get("claim_id") == claim_id and row.get("evidence_id") == evidence_id:
+                    return [(row.get("stance"), row.get("notes"))]
+            return []
+
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
 
-    def _handle_insert(self, sql: str) -> None:
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         table, rows = parse_insert(sql)
+        inserted: List[Dict[str, Any]] = []
+        param_index = 0
         for row in rows:
-            self._insert_row(table, row)
+            resolved: Dict[str, Any] = {}
+            for key, value in row.items():
+                if isinstance(value, str) and value == "%s":
+                    if param_index >= len(params):
+                        raise ValueError("Not enough parameters supplied for insert")
+                    resolved[key] = params[param_index]
+                    param_index += 1
+                else:
+                    resolved[key] = value
+            inserted.append(self._insert_row(table, resolved))
+        return inserted
 
-    def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
+    def _insert_row(self, table: str, row: Dict[str, Any]) -> Dict[str, Any]:
         processed: Dict[str, Any] = {}
         for key, value in row.items():
             if value is NOW_SENTINEL:
@@ -259,6 +316,7 @@ class FakeDatabase:
             processed.setdefault("rubric_version", "v1")
 
         self.tables[table].append(processed)
+        return processed
 
     def _tick(self) -> int:
         self._clock += 1
@@ -378,6 +436,28 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
+
+    def _select_claim_rows(
+        self, normalized: str, params: Sequence[Any]
+    ) -> List[Tuple[Any, ...]]:
+        claims = list(self.tables["claim"])
+        param_index = 0
+        if " where " in normalized:
+            _, tail = normalized.split(" where ", 1)
+            where_clause = tail.split(" order by ", 1)[0]
+            if "id = any(%s)" in where_clause:
+                ids = set(params[param_index])
+                param_index += 1
+                claims = [c for c in claims if c.get("id") in ids]
+            if "episode_id = any(%s)" in where_clause:
+                episode_ids = set(params[param_index])
+                param_index += 1
+                claims = [c for c in claims if c.get("episode_id") in episode_ids]
+        claims.sort(key=lambda c: c.get("id", 0))
+        return [
+            (c.get("id"), c.get("normalized_text"), c.get("raw_text"))
+            for c in claims
+        ]
 
 
 __all__ = ["FakeDatabase", "FakeConnection", "parse_insert", "NOW_SENTINEL"]
