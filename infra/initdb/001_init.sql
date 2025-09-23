@@ -67,6 +67,19 @@ CREATE TABLE transcript_segment (
   text TEXT
 );
 
+CREATE TABLE transcript_chunk (
+  id SERIAL PRIMARY KEY,
+  transcript_id INT NOT NULL REFERENCES transcript(id) ON DELETE CASCADE,
+  chunk_index INT NOT NULL,
+  token_start INT NOT NULL,
+  token_end INT NOT NULL,
+  token_count INT NOT NULL,
+  text TEXT NOT NULL,
+  key_points TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (transcript_id, chunk_index)
+);
+
 -- 3) Claims and grading
 CREATE TABLE claim (
   id SERIAL PRIMARY KEY,
@@ -119,8 +132,26 @@ CREATE TABLE episode_summary (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE job_queue (
+  id SERIAL PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  payload JSONB,
+  status TEXT NOT NULL DEFAULT 'queued',
+  priority INT NOT NULL DEFAULT 0,
+  run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  attempts INT NOT NULL DEFAULT 0,
+  max_attempts INT NOT NULL DEFAULT 3,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indexes
 CREATE INDEX idx_episode_title_trgm ON episode USING gin (title gin_trgm_ops);
 CREATE INDEX idx_claim_topic ON claim(topic);
 CREATE INDEX idx_claim_norm_trgm ON claim USING gin (normalized_text gin_trgm_ops);
 CREATE INDEX idx_evidence_ids ON evidence_source(pubmed_id, doi);
+CREATE INDEX idx_transcript_chunk_transcript ON transcript_chunk(transcript_id, chunk_index);
+CREATE INDEX idx_job_queue_status_priority ON job_queue(status, priority DESC, run_at, id);

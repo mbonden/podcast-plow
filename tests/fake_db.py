@@ -8,6 +8,7 @@ in-memory substitute that understands the handful of SQL statements used in
 the API handlers and seed data.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -175,6 +176,8 @@ class FakeDatabase:
             "claim_evidence": [],
             "claim_grade": [],
             "transcript": [],
+            "transcript_chunk": [],
+            "job_queue": [],
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -184,6 +187,8 @@ class FakeDatabase:
             "evidence_source": 1,
             "claim_grade": 1,
             "transcript": 1,
+            "transcript_chunk": 1,
+            "job_queue": 1,
         }
         self._insert_order = 0
         self._clock = 0
@@ -196,8 +201,7 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            self._handle_insert(stripped)
-            return []
+            return self._handle_insert(stripped, params)
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -225,14 +229,167 @@ class FakeDatabase:
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
 
+        if normalized.startswith("select id, episode_id, text, word_count from transcript") and "where episode_id = %s" in normalized:
+            return self._select_transcript(params[0])
+
+        if normalized.startswith("select count(*) from transcript_chunk where transcript_id = %s"):
+            transcript_id = params[0]
+            count = sum(1 for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id)
+            return [(count,)]
+
+        if normalized.startswith("delete from transcript_chunk where transcript_id = %s"):
+            transcript_id = params[0]
+            self.tables["transcript_chunk"] = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] != transcript_id]
+            return []
+
+        if normalized.startswith(
+            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk"
+        ) and "where transcript_id = %s" in normalized:
+            transcript_id = params[0]
+            rows = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id]
+            rows.sort(key=lambda r: r.get("chunk_index", 0))
+            return [
+                (
+                    row.get("id"),
+                    row.get("transcript_id"),
+                    row.get("chunk_index"),
+                    row.get("token_start"),
+                    row.get("token_end"),
+                    row.get("token_count"),
+                    row.get("text"),
+                    row.get("key_points"),
+                )
+                for row in rows
+            ]
+
+        if normalized.startswith("update transcript_chunk set key_points = %s where id = %s"):
+            key_points, chunk_id = params
+            for row in self.tables["transcript_chunk"]:
+                if row.get("id") == chunk_id:
+                    row["key_points"] = key_points
+                    break
+            return []
+
+        if normalized.startswith(
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
+        ) and "where status = %s" in normalized:
+            status = params[0]
+            jobs = [row for row in self.tables["job_queue"] if row.get("status") == status]
+            jobs.sort(key=lambda r: (-r.get("priority", 0), r.get("run_at", 0), r.get("id", 0)))
+            if jobs:
+                job = jobs[0]
+                return [
+                    (
+                        job.get("id"),
+                        job.get("job_type"),
+                        job.get("payload"),
+                        job.get("status"),
+                        job.get("priority"),
+                        job.get("run_at"),
+                        job.get("attempts"),
+                        job.get("max_attempts"),
+                        job.get("last_error"),
+                    )
+                ]
+            return []
+
+        if normalized.startswith(
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
+        ) and "where id = %s" in normalized:
+            job_id = params[0]
+            for job in self.tables["job_queue"]:
+                if job.get("id") == job_id:
+                    return [
+                        (
+                            job.get("id"),
+                            job.get("job_type"),
+                            job.get("payload"),
+                            job.get("status"),
+                            job.get("priority"),
+                            job.get("run_at"),
+                            job.get("attempts"),
+                            job.get("max_attempts"),
+                            job.get("last_error"),
+                        )
+                    ]
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, attempts = attempts + 1, started_at = now(), updated_at = now() where id = %s"
+        ):
+            status, job_id = params
+            for job in self.tables["job_queue"]:
+                if job.get("id") == job_id:
+                    job["status"] = status
+                    job["attempts"] = job.get("attempts", 0) + 1
+                    job["started_at"] = self._tick()
+                    job["updated_at"] = self._tick()
+                    break
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, run_at = %s, last_error = %s, started_at = null, finished_at = null, updated_at = now() where id = %s"
+        ):
+            status, run_at, last_error, job_id = params
+            for job in self.tables["job_queue"]:
+                if job.get("id") == job_id:
+                    job["status"] = status
+                    job["run_at"] = run_at
+                    job["last_error"] = last_error
+                    job["started_at"] = None
+                    job["finished_at"] = None
+                    job["updated_at"] = self._tick()
+                    break
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, finished_at = now(), last_error = %s, updated_at = now() where id = %s"
+        ):
+            status, last_error, job_id = params
+            for job in self.tables["job_queue"]:
+                if job.get("id") == job_id:
+                    job["status"] = status
+                    job["finished_at"] = self._tick()
+                    job["last_error"] = last_error
+                    job["updated_at"] = self._tick()
+                    break
+            return []
+
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
 
-    def _handle_insert(self, sql: str) -> None:
-        table, rows = parse_insert(sql)
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
+        statement = sql.strip().rstrip(";")
+        upper = statement.upper()
+        returning_columns: List[str] = []
+        match = re.search(r"\bRETURNING\b", upper)
+        if match:
+            main_part = statement[: match.start()].rstrip()
+            returning_part = statement[match.end() :].strip()
+            returning_columns = [col.strip() for col in returning_part.split(",") if col.strip()]
+        else:
+            main_part = statement
+
+        table, rows = parse_insert(main_part)
+        param_iter = iter(params)
+        inserted_rows: List[Dict[str, Any]] = []
         for row in rows:
-            self._insert_row(table, row)
+            processed: Dict[str, Any] = {}
+            for column, value in row.items():
+                if value == "%s":
+                    try:
+                        processed[column] = next(param_iter)
+                    except StopIteration as exc:  # pragma: no cover - defensive guard
+                        raise ValueError("Not enough parameters for insert") from exc
+                else:
+                    processed[column] = value
+            self._insert_row(table, processed)
+            inserted_rows.append(self.tables[table][-1])
+
+        if returning_columns:
+            return [tuple(r.get(col) for col in returning_columns) for r in inserted_rows]
+        return []
 
     def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
         processed: Dict[str, Any] = {}
@@ -257,6 +414,18 @@ class FakeDatabase:
 
         if table == "claim_grade":
             processed.setdefault("rubric_version", "v1")
+
+        if table == "transcript_chunk":
+            processed.setdefault("created_at", self._tick())
+
+        if table == "job_queue":
+            processed.setdefault("status", "queued")
+            processed.setdefault("priority", 0)
+            processed.setdefault("attempts", 0)
+            processed.setdefault("max_attempts", 3)
+            processed.setdefault("run_at", self._tick())
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", self._tick())
 
         self.tables[table].append(processed)
 
@@ -378,6 +547,27 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
+
+    def _select_transcript(self, episode_id: int) -> List[Tuple[Any, ...]]:
+        transcripts = [t for t in self.tables["transcript"] if t.get("episode_id") == episode_id]
+        transcripts = [t for t in transcripts if t.get("text")]
+        transcripts.sort(
+            key=lambda t: (
+                -(t.get("word_count") or 0),
+                -t.get("id", 0),
+            )
+        )
+        if not transcripts:
+            return []
+        top = transcripts[0]
+        return [
+            (
+                top.get("id"),
+                top.get("episode_id"),
+                top.get("text"),
+                top.get("word_count"),
+            )
+        ]
 
 
 __all__ = ["FakeDatabase", "FakeConnection", "parse_insert", "NOW_SENTINEL"]
