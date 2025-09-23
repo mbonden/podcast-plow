@@ -2,12 +2,19 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+
 from server.db.utils import db_conn
 from server.api.jobs import router as jobs_router
+
+from core.db import db_connection   # IMPORTANT: import from /app root
+
+
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
 app.include_router(jobs_router)
 
+def db_conn():
+    return db_connection()
 
 class EpisodeSummary(BaseModel):
     episode_id: int
@@ -41,11 +48,12 @@ def get_episode(episode_id: int):
                 FROM claim_grade
                 ORDER BY claim_id, created_at DESC
             )
-            SELECT c.id, c.raw_text, c.normalized_text, c.topic, c.domain, lg.grade, lg.rationale
+            SELECT c.id, c.raw_text, c.normalized_text, c.topic, c.domain,
+                   c.risk_level, c.start_ms, c.end_ms, lg.grade, lg.rationale
             FROM claim c
             LEFT JOIN latest_grade lg ON lg.claim_id = c.id
             WHERE c.episode_id = %s
-            ORDER BY c.id
+            ORDER BY c.start_ms NULLS LAST, c.id
         """, (episode_id,))
         claims = []
         for r in cur.fetchall():
@@ -55,8 +63,11 @@ def get_episode(episode_id: int):
                 "normalized_text": r[2],
                 "topic": r[3],
                 "domain": r[4],
-                "grade": r[5],
-                "grade_rationale": r[6],
+                "risk_level": r[5],
+                "start_ms": r[6],
+                "end_ms": r[7],
+                "grade": r[8],
+                "grade_rationale": r[9],
             })
         episode["claims"] = claims
         return episode
@@ -71,12 +82,13 @@ def get_topic_claims(topic: str):
                 FROM claim_grade
                 ORDER BY claim_id, created_at DESC
             )
-            SELECT c.id, e.id as episode_id, e.title, c.raw_text, c.normalized_text, c.domain, lg.grade, lg.rationale
+            SELECT c.id, e.id as episode_id, e.title, c.raw_text, c.normalized_text,
+                   c.domain, c.risk_level, c.start_ms, c.end_ms, lg.grade, lg.rationale
             FROM claim c
             JOIN episode e ON e.id = c.episode_id
             LEFT JOIN latest_grade lg ON lg.claim_id = c.id
             WHERE c.topic = %s
-            ORDER BY e.published_at DESC NULLS LAST, e.id DESC
+            ORDER BY e.published_at DESC NULLS LAST, e.id DESC, c.start_ms NULLS LAST
         """, (topic,))
         items = []
         for r in cur.fetchall():
@@ -87,8 +99,11 @@ def get_topic_claims(topic: str):
                 "raw_text": r[3],
                 "normalized_text": r[4],
                 "domain": r[5],
-                "grade": r[6],
-                "grade_rationale": r[7],
+                "risk_level": r[6],
+                "start_ms": r[7],
+                "end_ms": r[8],
+                "grade": r[9],
+                "grade_rationale": r[10],
             })
         return {"topic": topic, "claims": items}
 
