@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import pathlib
 import sys
 
+import pytest
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from server.core.grading import ClaimEvidence, EvidenceItem, compute_grade
@@ -30,6 +32,41 @@ def test_compute_grade_strong_support():
     grade, rationale = compute_grade(evidence)
     assert grade == "strong"
     assert "supporting evidence" in rationale
+
+
+@pytest.mark.parametrize(
+    "evidence, expected",
+    [
+        (
+            (
+                EvidenceItem(stance="supports", type="randomized controlled trial"),
+            ),
+            "moderate",
+        ),
+        (
+            (
+                EvidenceItem(stance="supports", type="observational study"),
+            ),
+            "weak",
+        ),
+        ((), "unsupported"),
+    ],
+)
+def test_compute_grade_expected_outcomes(evidence, expected):
+    grade, rationale = compute_grade(evidence)
+    assert grade == expected
+    assert rationale.startswith("Auto-graded")
+
+
+def test_compute_grade_conflict_reduces_confidence():
+    evidence = [
+        EvidenceItem(stance="supports", type="randomized controlled trial"),
+        EvidenceItem(stance="supports", type="observational study"),
+        EvidenceItem(stance="refutes", type="case report"),
+    ]
+    grade, rationale = compute_grade(evidence)
+    assert grade == "moderate"
+    assert "Conflicting evidence reduced confidence." in rationale
 
 
 def test_auto_grader_handles_multiple_claims():
