@@ -2,9 +2,16 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+
+from server.db.utils import db_conn
+from server.api.jobs import router as jobs_router
+
 from core.db import db_connection   # IMPORTANT: import from /app root
 
+
+
 app = FastAPI(title="podcast-plow API", version="0.1.0")
+app.include_router(jobs_router)
 
 def db_conn():
     return db_connection()
