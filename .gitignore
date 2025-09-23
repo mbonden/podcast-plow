@@ -1,0 +1,6 @@
+@"
+__pycache__/
+*.pyc
+.env
+infra/db_data/
+"@ | Out-File -Encoding utf8 .gitignore
