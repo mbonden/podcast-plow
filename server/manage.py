@@ -11,6 +11,7 @@ from db.utils import db_conn
 from ingest import feeds as feeds_module
 from ingest import summaries as summaries_module
 from ingest import transcripts as transcripts_module
+from services import claims as claims_service
 from services import jobs as jobs_service
 from services import summarize as summarize_service
 
@@ -51,6 +52,18 @@ def _process_job(conn, job: jobs_service.Job) -> None:
         summarize_service.summarize_episode(conn, episode_int, refresh=refresh_flag)
         return
 
+    if job.job_type == "extract_claims":
+        episode_id = job.payload.get("episode_id")
+        if episode_id is None:
+            raise ValueError("extract_claims job missing episode_id in payload")
+        try:
+            episode_int = int(episode_id)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+            raise ValueError(f"Invalid episode_id value {episode_id!r}") from exc
+        refresh_flag = bool(job.payload.get("refresh", False))
+        claims_service.extract_episode_claims(conn, episode_int, refresh=refresh_flag)
+        return
+
     raise ValueError(f"Unsupported job type: {job.job_type}")
 
 
@@ -70,6 +83,24 @@ def enqueue_summarize(
                 priority=priority,
             )
     typer.echo(f"Enqueued {len(ids)} summarisation job(s).")
+
+
+@enqueue_app.command("extract-claims")
+def enqueue_extract_claims(
+    episode_ids: str = typer.Option(..., "--episode-ids", help="Comma separated list of episode ids"),
+    priority: int = typer.Option(0, "--priority", "-p", help="Higher numbers run before lower priority"),
+    refresh: bool = typer.Option(False, "--refresh", help="Rebuild transcript chunks before extracting"),
+) -> None:
+    ids = _parse_episode_ids(episode_ids)
+    with db_conn() as conn:
+        for episode_id in ids:
+            jobs_service.enqueue_job(
+                conn,
+                job_type="extract_claims",
+                payload={"episode_id": episode_id, "refresh": refresh},
+                priority=priority,
+            )
+    typer.echo(f"Enqueued {len(ids)} claim extraction job(s).")
 
 
 @app.callback()

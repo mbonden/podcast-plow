@@ -147,6 +147,12 @@ class FakeCursor:
         self._index = len(self._rows)
         return list(remaining)
 
+    def __enter__(self) -> "FakeCursor":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
 
 class FakeConnection:
     def __init__(self, db: "FakeDatabase") -> None:
@@ -232,6 +238,12 @@ class FakeDatabase:
         if normalized.startswith("select id, episode_id, text, word_count from transcript") and "where episode_id = %s" in normalized:
             return self._select_transcript(params[0])
 
+        if normalized.startswith("select id, normalized_text from claim where episode_id = %s"):
+            episode_id = params[0]
+            rows = [row for row in self.tables["claim"] if row.get("episode_id") == episode_id]
+            rows.sort(key=lambda r: r.get("id", 0))
+            return [(row.get("id"), row.get("normalized_text")) for row in rows]
+
         if normalized.startswith("select count(*) from transcript_chunk where transcript_id = %s"):
             transcript_id = params[0]
             count = sum(1 for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id)
@@ -268,6 +280,27 @@ class FakeDatabase:
                 if row.get("id") == chunk_id:
                     row["key_points"] = key_points
                     break
+            return []
+
+        if normalized.startswith(
+            "update claim set raw_text = %s, normalized_text = %s, topic = %s, domain = %s, risk_level = %s, start_ms = %s, end_ms = %s where id = %s"
+        ):
+            raw_text, normalized, topic, domain, risk_level, start_ms, end_ms, claim_id = params
+            for row in self.tables["claim"]:
+                if row.get("id") == claim_id:
+                    row["raw_text"] = raw_text
+                    row["normalized_text"] = normalized
+                    row["topic"] = topic
+                    row["domain"] = domain
+                    row["risk_level"] = risk_level
+                    row["start_ms"] = start_ms
+                    row["end_ms"] = end_ms
+                    break
+            return []
+
+        if normalized.startswith("delete from claim where id = %s"):
+            claim_id = params[0]
+            self.tables["claim"] = [row for row in self.tables["claim"] if row.get("id") != claim_id]
             return []
 
         if normalized.startswith(
@@ -446,7 +479,13 @@ class FakeDatabase:
 
     def _select_episode_claims(self, episode_id: int) -> List[Tuple[Any, ...]]:
         claims = [c for c in self.tables["claim"] if c["episode_id"] == episode_id]
-        claims.sort(key=lambda c: c["id"])
+        claims.sort(
+            key=lambda c: (
+                0 if c.get("start_ms") is not None else 1,
+                c.get("start_ms") or 0,
+                c.get("id", 0),
+            )
+        )
         rows: List[Tuple[Any, ...]] = []
         for claim in claims:
             latest = self._latest_grade(claim["id"])
@@ -457,6 +496,9 @@ class FakeDatabase:
                     claim.get("normalized_text"),
                     claim.get("topic"),
                     claim.get("domain"),
+                    claim.get("risk_level"),
+                    claim.get("start_ms"),
+                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
@@ -495,6 +537,9 @@ class FakeDatabase:
                     claim.get("raw_text"),
                     claim.get("normalized_text"),
                     claim.get("domain"),
+                    claim.get("risk_level"),
+                    claim.get("start_ms"),
+                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
