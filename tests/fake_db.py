@@ -209,10 +209,13 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            inserted_rows = self._handle_insert(stripped, params)
-            if "returning id" in normalized:
-                return [(row.get("id"),) for row in inserted_rows]
+
+            self._handle_insert(stripped, params)
+
             return []
+
+        if normalized == "select id, episode_id from claim order by id":
+            return self._select_claim_rows()
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -364,25 +367,40 @@ class FakeDatabase:
 
     # helpers -----------------------------------------------------------------
 
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> None:
+        if params:
+            sql = self._apply_params(sql, params)
 
-    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         table, rows = parse_insert(sql)
         inserted: List[Dict[str, Any]] = []
         param_index = 0
         for row in rows:
-            resolved: Dict[str, Any] = {}
-            for key, value in row.items():
-                if isinstance(value, str) and value == "%s":
-                    if param_index >= len(params):
-                        raise ValueError("Not enough parameters supplied for insert")
-                    resolved[key] = params[param_index]
-                    param_index += 1
-                else:
-                    resolved[key] = value
-            inserted.append(self._insert_row(table, resolved))
-        return inserted
 
-    def _insert_row(self, table: str, row: Dict[str, Any]) -> Dict[str, Any]:
+            self._insert_row(table, row)
+
+    def _apply_params(self, sql: str, params: Sequence[Any]) -> str:
+        parts = sql.split("%s")
+        if len(parts) - 1 != len(params):
+            return sql
+        rendered = []
+        for idx, part in enumerate(parts[:-1]):
+            rendered.append(part)
+            rendered.append(self._serialize_param(params[idx]))
+        rendered.append(parts[-1])
+        return "".join(rendered)
+
+    def _serialize_param(self, value: Any) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, str):
+            escaped = value.replace("'", "''")
+            return f"'{escaped}'"
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        return str(value)
+
+    def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
+
         processed: Dict[str, Any] = {}
         for key, value in row.items():
             if value is NOW_SENTINEL:
@@ -551,6 +569,10 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
+
+    def _select_claim_rows(self) -> List[Tuple[Any, ...]]:
+        claims = sorted(self.tables["claim"], key=lambda c: c.get("id", 0))
+        return [(claim.get("id"), claim.get("episode_id")) for claim in claims]
 
 
     def _select_claim_rows(
