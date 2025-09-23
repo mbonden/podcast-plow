@@ -397,7 +397,7 @@ class FakeDatabase:
             processed.setdefault("created_at", self._tick())
 
         if table == "claim_grade":
-            processed.setdefault("rubric_version", "v1")
+            processed.setdefault("rubric_version", "auto-v1")
 
         self.tables[table].append(processed)
         return processed

@@ -72,8 +72,8 @@ def seeded_client(fake_db: FakeDatabase) -> Iterable[TestClient]:
                 cur.execute(stmt)
             for episode_id, transcript_text in TRANSCRIPT_TEXT_BY_EPISODE.items():
                 cur.execute(
-                    "INSERT INTO transcript (episode_id, source, lang, text) "
-                    f"VALUES ({episode_id}, 'upload', 'en', '{transcript_text}')"
+                    "INSERT INTO transcript (episode_id, source, lang, text) VALUES (%s, %s, %s, %s)",
+                    (episode_id, "upload", "en", transcript_text),
                 )
         yield client
 
