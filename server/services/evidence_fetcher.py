@@ -700,7 +700,7 @@ def attach_evidence_to_claim(
     stance: str,
     note_context: Optional[str] = None,
 ) -> bool:
-    timestamp = dt.datetime.utcnow().date().isoformat()
+    timestamp = dt.datetime.now(dt.UTC).date().isoformat()
     note_parts = [AUTO_NOTE_PREFIX, timestamp]
     if note_context:
         note_parts.append(note_context)

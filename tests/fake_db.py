@@ -8,8 +8,8 @@ in-memory substitute that understands the handful of SQL statements used in
 the API handlers and seed data.
 """
 
-import re
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 
@@ -18,6 +18,23 @@ NOW_SENTINEL = object()
 
 def _normalize_sql(sql: str) -> str:
     return " ".join(sql.strip().lower().split())
+
+
+def _ilike_match(value: str, pattern: str) -> bool:
+    if value is None or pattern is None:
+        return False
+
+    regex_parts: List[str] = []
+    for ch in pattern:
+        if ch == "%":
+            regex_parts.append(".*")
+        elif ch == "_":
+            regex_parts.append(".")
+        else:
+            regex_parts.append(re.escape(ch))
+
+    regex = "".join(regex_parts)
+    return re.fullmatch(regex, value, re.IGNORECASE) is not None
 
 
 def _split_value_tuples(values_part: str) -> List[str]:
@@ -147,18 +164,10 @@ class FakeCursor:
         self._index = len(self._rows)
         return list(remaining)
 
-    def __enter__(self) -> "FakeCursor":  # pragma: no cover - convenience
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - convenience
-        return False
-
-
     def __enter__(self) -> "FakeCursor":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
-
         return False
 
 
@@ -166,7 +175,7 @@ class FakeConnection:
     def __init__(self, db: "FakeDatabase") -> None:
         self._db = db
 
-    def cursor(self, *args, **kwargs) -> FakeCursor:  # pragma: no cover - signature parity
+    def cursor(self) -> FakeCursor:
         return FakeCursor(self._db)
 
     def close(self) -> None:  # pragma: no cover - compatibility shim
@@ -190,9 +199,6 @@ class FakeDatabase:
             "claim_evidence": [],
             "claim_grade": [],
             "transcript": [],
-
-            "job": [],
-
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -202,9 +208,6 @@ class FakeDatabase:
             "evidence_source": 1,
             "claim_grade": 1,
             "transcript": 1,
-
-            "job": 1,
-
         }
         self._insert_order = 0
         self._clock = 0
@@ -216,21 +219,11 @@ class FakeDatabase:
         stripped = sql.strip()
         normalized = _normalize_sql(stripped)
 
-        if normalized.startswith("insert into job"):
-            return self._insert_job(stripped, params)
-
         if normalized.startswith("insert into"):
-
-            self._handle_insert(stripped, params)
-
+            inserted = self._handle_insert(stripped, params)
+            if " returning " in normalized:
+                return [(row.get("id"),) for row in inserted]
             return []
-
-        if normalized.startswith("select") and " from job" in normalized:
-            return self._select_jobs(normalized, params)
-
-        if normalized.startswith("update job"):
-            return self._update_job(stripped, params)
-
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -249,9 +242,6 @@ class FakeDatabase:
         if normalized.startswith("with latest_grade as") and "where c.episode_id = %s" in normalized:
             return self._select_episode_claims(params[0])
 
-        if normalized.startswith("select id, normalized_text, raw_text from claim"):
-            return self._select_claim_rows(normalized, params)
-
         if normalized.startswith("with latest_grade as") and "where c.topic = %s" in normalized:
             return self._select_topic_claims(params[0])
 
@@ -261,98 +251,43 @@ class FakeDatabase:
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
 
-
-        if normalized.startswith("select id, episode_id, text, word_count from transcript") and "where episode_id = %s" in normalized:
-            return self._select_transcript(params[0])
-
-        if normalized.startswith("select id, normalized_text from claim where episode_id = %s"):
-            episode_id = params[0]
-            rows = [row for row in self.tables["claim"] if row.get("episode_id") == episode_id]
-            rows.sort(key=lambda r: r.get("id", 0))
-            return [(row.get("id"), row.get("normalized_text")) for row in rows]
-
-        if normalized.startswith("select count(*) from transcript_chunk where transcript_id = %s"):
-            transcript_id = params[0]
-            count = sum(1 for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id)
-            return [(count,)]
-
-        if normalized.startswith("delete from transcript_chunk where transcript_id = %s"):
-            transcript_id = params[0]
-            self.tables["transcript_chunk"] = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] != transcript_id]
-            return []
-
-        if normalized.startswith(
-            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk"
-        ) and "where transcript_id = %s" in normalized:
-            transcript_id = params[0]
-            rows = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id]
-            rows.sort(key=lambda r: r.get("chunk_index", 0))
-            return [
-                (
-                    row.get("id"),
-                    row.get("transcript_id"),
-                    row.get("chunk_index"),
-                    row.get("token_start"),
-                    row.get("token_end"),
-                    row.get("token_count"),
-                    row.get("text"),
-                    row.get("key_points"),
-                )
-                for row in rows
+        if normalized.startswith("select id, title from episode where title ilike %s"):
+            pattern = params[0]
+            matches = [
+                episode
+                for episode in self.tables["episode"]
+                if _ilike_match(episode.get("title", ""), pattern)
             ]
 
-        if normalized.startswith("update transcript_chunk set key_points = %s where id = %s"):
-            key_points, chunk_id = params
-            for row in self.tables["transcript_chunk"]:
-                if row.get("id") == chunk_id:
-                    row["key_points"] = key_points
-                    break
-            return []
+            matches.sort(
+                key=lambda episode: (
+                    0 if episode.get("published_at") is not None else 1,
+                    -(episode.get("published_at") or 0),
+                    -episode.get("id", 0),
+                )
+            )
 
-        if normalized.startswith(
-            "update claim set raw_text = %s, normalized_text = %s, topic = %s, domain = %s, risk_level = %s, start_ms = %s, end_ms = %s where id = %s"
-        ):
-            raw_text, normalized, topic, domain, risk_level, start_ms, end_ms, claim_id = params
-            for row in self.tables["claim"]:
-                if row.get("id") == claim_id:
-                    row["raw_text"] = raw_text
-                    row["normalized_text"] = normalized
-                    row["topic"] = topic
-                    row["domain"] = domain
-                    row["risk_level"] = risk_level
-                    row["start_ms"] = start_ms
-                    row["end_ms"] = end_ms
-                    break
-            return []
+            limited = matches[:20]
+            return [(episode.get("id"), episode.get("title")) for episode in limited]
 
-        if normalized.startswith("delete from claim where id = %s"):
-            claim_id = params[0]
-            self.tables["claim"] = [row for row in self.tables["claim"] if row.get("id") != claim_id]
-            return []
+        if normalized.startswith("select id, raw_text, topic from claim where raw_text ilike %s"):
+            pattern = params[0]
+            matches = [
+                claim
+                for claim in self.tables["claim"]
+                if _ilike_match(claim.get("raw_text", ""), pattern)
+            ]
 
-        if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ) and "where status = %s" in normalized:
-            status = params[0]
-            jobs = [row for row in self.tables["job_queue"] if row.get("status") == status]
-            jobs.sort(key=lambda r: (-r.get("priority", 0), r.get("run_at", 0), r.get("id", 0)))
-            if jobs:
-                job = jobs[0]
-                return [
-                    (
-                        job.get("id"),
-                        job.get("job_type"),
-                        job.get("payload"),
-                        job.get("status"),
-                        job.get("priority"),
-                        job.get("run_at"),
-                        job.get("attempts"),
-                        job.get("max_attempts"),
-                        job.get("last_error"),
-                    )
-                ]
-            return []
-
+            matches.sort(key=lambda claim: -claim.get("id", 0))
+            limited = matches[:20]
+            return [
+                (
+                    claim.get("id"),
+                    claim.get("raw_text"),
+                    claim.get("topic"),
+                )
+                for claim in limited
+            ]
 
         if normalized.startswith("select id from evidence_source where pubmed_id = %s"):
             pubmed_id = params[0]
@@ -375,47 +310,72 @@ class FakeDatabase:
             for row in self.tables["claim_evidence"]:
                 if row.get("claim_id") == claim_id and row.get("evidence_id") == evidence_id:
                     return [(row.get("stance"), row.get("notes"))]
+            return []
 
+        if normalized.startswith(
+            "select count(*) from claim_evidence where claim_id = %s and stance is not null"
+        ):
+            claim_id = params[0]
+            count = sum(
+                1
+                for row in self.tables["claim_evidence"]
+                if row.get("claim_id") == claim_id and row.get("stance") is not None
+            )
+            return [(count,)]
+
+        if normalized.startswith(
+            "update claim_evidence set stance = %s, notes = %s where claim_id = %s and evidence_id = %s"
+        ):
+            stance, notes, claim_id, evidence_id = params
+            for row in self.tables["claim_evidence"]:
+                if row.get("claim_id") == claim_id and row.get("evidence_id") == evidence_id:
+                    row["stance"] = stance
+                    row["notes"] = notes
+                    break
+            return []
+
+        if normalized.startswith("update evidence_source set"):
+            evidence_id = params[-1]
+            row = self._find_one("evidence_source", evidence_id)
+            if not row:
+                return []
+            row["title"] = params[0]
+            row["year"] = params[1]
+            if "pubmed_id = coalesce" in normalized:
+                pubmed_id = params[2]
+                if pubmed_id not in (None, ""):
+                    row["pubmed_id"] = pubmed_id
+            else:
+                doi = params[2]
+                if doi not in (None, ""):
+                    row["doi"] = doi
+            row["url"] = params[3]
+            row["type"] = params[4]
+            row["journal"] = params[5]
             return []
 
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
 
-    def _handle_insert(self, sql: str, params: Sequence[Any]) -> None:
-        if params:
-            sql = self._apply_params(sql, params)
-
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
         table, rows = parse_insert(sql)
+        param_iter = iter(params)
         inserted: List[Dict[str, Any]] = []
-        param_index = 0
         for row in rows:
+            materialized: Dict[str, Any] = {}
+            for key, value in row.items():
+                if value == "%s":
+                    try:
+                        materialized[key] = next(param_iter)
+                    except StopIteration:
+                        materialized[key] = value
+                else:
+                    materialized[key] = value
+            inserted.append(self._insert_row(table, materialized))
+        return inserted
 
-            self._insert_row(table, row)
-
-    def _apply_params(self, sql: str, params: Sequence[Any]) -> str:
-        parts = sql.split("%s")
-        if len(parts) - 1 != len(params):
-            return sql
-        rendered = []
-        for idx, part in enumerate(parts[:-1]):
-            rendered.append(part)
-            rendered.append(self._serialize_param(params[idx]))
-        rendered.append(parts[-1])
-        return "".join(rendered)
-
-    def _serialize_param(self, value: Any) -> str:
-        if value is None:
-            return "NULL"
-        if isinstance(value, str):
-            escaped = value.replace("'", "''")
-            return f"'{escaped}'"
-        if isinstance(value, bool):
-            return "TRUE" if value else "FALSE"
-        return str(value)
-
-    def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
-
+    def _insert_row(self, table: str, row: Dict[str, Any]) -> Dict[str, Any]:
         processed: Dict[str, Any] = {}
         for key, value in row.items():
             if value is NOW_SENTINEL:
@@ -433,31 +393,11 @@ class FakeDatabase:
         processed.setdefault("__order", self._insert_order)
         self._insert_order += 1
 
-        if table == "job":
-            processed.setdefault("status", "queued")
-            now_value = self._tick()
-            processed.setdefault("created_at", now_value)
-            processed.setdefault("updated_at", now_value)
-            processed.setdefault("result", None)
-            processed.setdefault("error", None)
-
         if table in {"episode", "episode_summary", "claim", "claim_grade"}:
             processed.setdefault("created_at", self._tick())
 
         if table == "claim_grade":
-            processed.setdefault("rubric_version", "v1")
-
-        if table == "transcript_chunk":
-            processed.setdefault("created_at", self._tick())
-
-        if table == "job_queue":
-            processed.setdefault("status", "queued")
-            processed.setdefault("priority", 0)
-            processed.setdefault("attempts", 0)
-            processed.setdefault("max_attempts", 3)
-            processed.setdefault("run_at", self._tick())
-            processed.setdefault("created_at", self._tick())
-            processed.setdefault("updated_at", self._tick())
+            processed.setdefault("rubric_version", "auto-v1")
 
         self.tables[table].append(processed)
         return processed
@@ -479,13 +419,7 @@ class FakeDatabase:
 
     def _select_episode_claims(self, episode_id: int) -> List[Tuple[Any, ...]]:
         claims = [c for c in self.tables["claim"] if c["episode_id"] == episode_id]
-        claims.sort(
-            key=lambda c: (
-                0 if c.get("start_ms") is not None else 1,
-                c.get("start_ms") or 0,
-                c.get("id", 0),
-            )
-        )
+        claims.sort(key=lambda c: c["id"])
         rows: List[Tuple[Any, ...]] = []
         for claim in claims:
             latest = self._latest_grade(claim["id"])
@@ -496,9 +430,6 @@ class FakeDatabase:
                     claim.get("normalized_text"),
                     claim.get("topic"),
                     claim.get("domain"),
-                    claim.get("risk_level"),
-                    claim.get("start_ms"),
-                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
@@ -537,9 +468,6 @@ class FakeDatabase:
                     claim.get("raw_text"),
                     claim.get("normalized_text"),
                     claim.get("domain"),
-                    claim.get("risk_level"),
-                    claim.get("start_ms"),
-                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
@@ -592,117 +520,6 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
-
-
-    def _insert_job(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
-        if params:
-            # Support both explicit status and relying on default.
-            job_type = params[0]
-            if len(params) == 1:
-                status = "queued"
-                payload = None
-            elif len(params) == 2:
-                status = params[1] or "queued"
-                payload = None
-            else:
-                status = params[1] or "queued"
-                payload = params[2]
-        else:
-            _, rows = parse_insert(sql)
-            if not rows:
-                raise ValueError("No rows provided for job insert")
-            row = rows[0]
-            job_type = row.get("job_type")
-            status = row.get("status", "queued")
-            payload = row.get("payload")
-
-        if payload is None:
-            payload = {}
-
-        self._insert_row(
-            "job",
-            {
-                "job_type": job_type,
-                "status": status,
-                "payload": payload,
-            },
-        )
-
-        inserted = self.tables["job"][-1]
-        if "returning" in sql.lower():
-            return [self._job_tuple(inserted)]
-        return []
-
-    def _select_jobs(self, normalized_sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
-        if "where id = %s" in normalized_sql:
-            job_id = params[0]
-            job = self._find_one("job", job_id)
-            return [self._job_tuple(job)] if job else []
-
-        rows = list(self.tables["job"])
-        param_index = 0
-
-        if "where status = %s" in normalized_sql:
-            status = params[param_index]
-            param_index += 1
-            rows = [row for row in rows if row.get("status") == status]
-
-        if "order by" in normalized_sql:
-            if "order by id desc" in normalized_sql:
-                rows.sort(key=lambda row: row.get("id", 0), reverse=True)
-            elif "order by id" in normalized_sql:
-                rows.sort(key=lambda row: row.get("id", 0))
-            else:
-                rows.sort(key=lambda row: row.get("__order", 0))
-        else:
-            rows.sort(key=lambda row: row.get("__order", 0))
-
-        if "limit %s" in normalized_sql:
-            limit = params[param_index]
-            rows = rows[: int(limit)]
-
-        return [self._job_tuple(row) for row in rows]
-
-    def _update_job(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
-        if "set" not in sql.lower() or "where" not in sql.lower():
-            raise ValueError(f"Unsupported job update: {sql}")
-
-        lower = sql.lower()
-        assignments, where_clause = lower.split("where", 1)
-        set_clause = assignments.split("set", 1)[1]
-        updates = [part.strip() for part in set_clause.split(",") if part.strip()]
-
-        job_id = params[-1]
-        job = self._find_one("job", job_id)
-        if not job:
-            return []
-
-        value_iter = iter(params[:-1])
-        for assignment in updates:
-            column = assignment.split("=")[0].strip()
-            if assignment.endswith("now()"):
-                job[column] = self._tick()
-            else:
-                job[column] = next(value_iter)
-
-        if "returning" in lower:
-            return [self._job_tuple(job)]
-        return []
-
-    def _job_tuple(self, job: Dict[str, Any] | None) -> Tuple[Any, ...]:
-        if not job:
-            return ()
-        return (
-            job.get("id"),
-            job.get("job_type"),
-            job.get("status"),
-            job.get("payload"),
-            job.get("result"),
-            job.get("error"),
-            job.get("created_at"),
-            job.get("updated_at"),
-        )
-
 
 
 __all__ = ["FakeDatabase", "FakeConnection", "parse_insert", "NOW_SENTINEL"]

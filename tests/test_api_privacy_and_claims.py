@@ -72,8 +72,8 @@ def seeded_client(fake_db: FakeDatabase) -> Iterable[TestClient]:
                 cur.execute(stmt)
             for episode_id, transcript_text in TRANSCRIPT_TEXT_BY_EPISODE.items():
                 cur.execute(
-                    "INSERT INTO transcript (episode_id, source, lang, text) "
-                    f"VALUES ({episode_id}, 'upload', 'en', '{transcript_text}')"
+                    "INSERT INTO transcript (episode_id, source, lang, text) VALUES (%s, %s, %s, %s)",
+                    (episode_id, "upload", "en", transcript_text),
                 )
         yield client
 
@@ -124,3 +124,21 @@ def test_claim_endpoints_return_seed_data(seeded_client: TestClient) -> None:
 
     topic_grades = {item["claim_id"]: item["grade"] for item in topic["claims"]}
     assert topic_grades.get(1) == "moderate"
+
+
+def test_search_endpoint_matches_claims(seeded_client: TestClient) -> None:
+    response = seeded_client.get("/search", params={"q": "ketones"})
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["q"] == "ketones"
+    assert any(item["id"] == 1 for item in payload["claims"])
+
+
+def test_search_endpoint_matches_episodes(seeded_client: TestClient) -> None:
+    response = seeded_client.get("/search", params={"q": "brain"})
+    assert response.status_code == 200
+
+    payload = response.json()
+    titles = {item["title"] for item in payload["episodes"]}
+    assert "Brain and Body Chat 015" in titles
