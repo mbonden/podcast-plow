@@ -2,10 +2,12 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from server.db.utils import db_conn
+from core.db import db_connection   # IMPORTANT: import from /app root
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
 
+def db_conn():
+    return db_connection()
 
 class EpisodeSummary(BaseModel):
     episode_id: int
