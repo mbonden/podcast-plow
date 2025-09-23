@@ -196,8 +196,11 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            self._handle_insert(stripped)
+            self._handle_insert(stripped, params)
             return []
+
+        if normalized == "select id, episode_id from claim order by id":
+            return self._select_claim_rows()
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -229,10 +232,33 @@ class FakeDatabase:
 
     # helpers -----------------------------------------------------------------
 
-    def _handle_insert(self, sql: str) -> None:
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> None:
+        if params:
+            sql = self._apply_params(sql, params)
         table, rows = parse_insert(sql)
         for row in rows:
             self._insert_row(table, row)
+
+    def _apply_params(self, sql: str, params: Sequence[Any]) -> str:
+        parts = sql.split("%s")
+        if len(parts) - 1 != len(params):
+            return sql
+        rendered = []
+        for idx, part in enumerate(parts[:-1]):
+            rendered.append(part)
+            rendered.append(self._serialize_param(params[idx]))
+        rendered.append(parts[-1])
+        return "".join(rendered)
+
+    def _serialize_param(self, value: Any) -> str:
+        if value is None:
+            return "NULL"
+        if isinstance(value, str):
+            escaped = value.replace("'", "''")
+            return f"'{escaped}'"
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        return str(value)
 
     def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
         processed: Dict[str, Any] = {}
@@ -378,6 +404,10 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
+
+    def _select_claim_rows(self) -> List[Tuple[Any, ...]]:
+        claims = sorted(self.tables["claim"], key=lambda c: c.get("id", 0))
+        return [(claim.get("id"), claim.get("episode_id")) for claim in claims]
 
 
 __all__ = ["FakeDatabase", "FakeConnection", "parse_insert", "NOW_SENTINEL"]

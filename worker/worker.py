@@ -8,6 +8,7 @@ from typing import Iterable, Tuple
 
 from server.db.utils import db_conn
 from server.services.evidence_fetcher import EvidenceFetcher
+from server.services.grader import AutoGradeService
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,26 @@ def run_evidence_job(
             )
 
 
+def run_auto_grade_job(
+    *,
+    claim_ids: Iterable[int] | None,
+    episode_ids: Iterable[int] | None,
+) -> int:
+    with db_conn() as conn:
+        service = AutoGradeService(conn)
+        results = service.grade_claims(
+            claim_ids=list(claim_ids) if claim_ids else None,
+            episode_ids=list(episode_ids) if episode_ids else None,
+        )
+    if not results:
+        logger.info("No claims matched the provided filters; nothing graded.")
+        return 0
+    logger.info("Auto-graded %s claims", len(results))
+    for row in results:
+        logger.info("Claim %s graded %s", row["claim_id"], row["grade"])
+    return len(results)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Background worker utilities")
     subparsers = parser.add_subparsers(dest="command")
@@ -83,6 +104,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to sleep between PubMed queries",
     )
 
+    enqueue_parser = subparsers.add_parser(
+        "enqueue",
+        help="Enqueue or run asynchronous-style jobs",
+    )
+    enqueue_subparsers = enqueue_parser.add_subparsers(dest="enqueue_command")
+    auto_grade_parser = enqueue_subparsers.add_parser(
+        "auto-grade",
+        help="Auto-grade claims using linked evidence",
+    )
+    auto_grade_parser.add_argument(
+        "--claim-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Only grade the specified claim ids",
+    )
+    auto_grade_parser.add_argument(
+        "--episode-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Grade all claims for the specified episode ids",
+    )
+
     parser.set_defaults(command="evidence")
     return parser
 
@@ -99,6 +144,11 @@ def main() -> None:
             max_results=args.max_results,
             force=args.force,
             sleep_between=args.sleep_between,
+        )
+    elif args.command == "enqueue" and args.enqueue_command == "auto-grade":
+        run_auto_grade_job(
+            claim_ids=args.claim_ids,
+            episode_ids=args.episode_ids,
         )
     else:
         parser.print_help()
