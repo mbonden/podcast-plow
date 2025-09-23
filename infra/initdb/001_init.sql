@@ -119,8 +119,20 @@ CREATE TABLE episode_summary (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE job (
+  id SERIAL PRIMARY KEY,
+  job_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  payload JSONB NOT NULL,
+  result JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- Indexes
 CREATE INDEX idx_episode_title_trgm ON episode USING gin (title gin_trgm_ops);
 CREATE INDEX idx_claim_topic ON claim(topic);
 CREATE INDEX idx_claim_norm_trgm ON claim USING gin (normalized_text gin_trgm_ops);
 CREATE INDEX idx_evidence_ids ON evidence_source(pubmed_id, doi);
+CREATE INDEX idx_job_status ON job(status);

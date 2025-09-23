@@ -3,8 +3,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from server.db.utils import db_conn
+from server.api.jobs import router as jobs_router
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
+app.include_router(jobs_router)
 
 
 class EpisodeSummary(BaseModel):

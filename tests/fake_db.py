@@ -146,12 +146,18 @@ class FakeCursor:
         self._index = len(self._rows)
         return list(remaining)
 
+    def __enter__(self) -> "FakeCursor":  # pragma: no cover - convenience
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - convenience
+        return False
+
 
 class FakeConnection:
     def __init__(self, db: "FakeDatabase") -> None:
         self._db = db
 
-    def cursor(self) -> FakeCursor:
+    def cursor(self, *args, **kwargs) -> FakeCursor:  # pragma: no cover - signature parity
         return FakeCursor(self._db)
 
     def close(self) -> None:  # pragma: no cover - compatibility shim
@@ -175,6 +181,7 @@ class FakeDatabase:
             "claim_evidence": [],
             "claim_grade": [],
             "transcript": [],
+            "job": [],
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -184,6 +191,7 @@ class FakeDatabase:
             "evidence_source": 1,
             "claim_grade": 1,
             "transcript": 1,
+            "job": 1,
         }
         self._insert_order = 0
         self._clock = 0
@@ -195,9 +203,18 @@ class FakeDatabase:
         stripped = sql.strip()
         normalized = _normalize_sql(stripped)
 
+        if normalized.startswith("insert into job"):
+            return self._insert_job(stripped, params)
+
         if normalized.startswith("insert into"):
             self._handle_insert(stripped)
             return []
+
+        if normalized.startswith("select") and " from job" in normalized:
+            return self._select_jobs(normalized, params)
+
+        if normalized.startswith("update job"):
+            return self._update_job(stripped, params)
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -251,6 +268,14 @@ class FakeDatabase:
 
         processed.setdefault("__order", self._insert_order)
         self._insert_order += 1
+
+        if table == "job":
+            processed.setdefault("status", "queued")
+            now_value = self._tick()
+            processed.setdefault("created_at", now_value)
+            processed.setdefault("updated_at", now_value)
+            processed.setdefault("result", None)
+            processed.setdefault("error", None)
 
         if table in {"episode", "episode_summary", "claim", "claim_grade"}:
             processed.setdefault("created_at", self._tick())
@@ -378,6 +403,115 @@ class FakeDatabase:
 
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
+
+    def _insert_job(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
+        if params:
+            # Support both explicit status and relying on default.
+            job_type = params[0]
+            if len(params) == 1:
+                status = "queued"
+                payload = None
+            elif len(params) == 2:
+                status = params[1] or "queued"
+                payload = None
+            else:
+                status = params[1] or "queued"
+                payload = params[2]
+        else:
+            _, rows = parse_insert(sql)
+            if not rows:
+                raise ValueError("No rows provided for job insert")
+            row = rows[0]
+            job_type = row.get("job_type")
+            status = row.get("status", "queued")
+            payload = row.get("payload")
+
+        if payload is None:
+            payload = {}
+
+        self._insert_row(
+            "job",
+            {
+                "job_type": job_type,
+                "status": status,
+                "payload": payload,
+            },
+        )
+
+        inserted = self.tables["job"][-1]
+        if "returning" in sql.lower():
+            return [self._job_tuple(inserted)]
+        return []
+
+    def _select_jobs(self, normalized_sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
+        if "where id = %s" in normalized_sql:
+            job_id = params[0]
+            job = self._find_one("job", job_id)
+            return [self._job_tuple(job)] if job else []
+
+        rows = list(self.tables["job"])
+        param_index = 0
+
+        if "where status = %s" in normalized_sql:
+            status = params[param_index]
+            param_index += 1
+            rows = [row for row in rows if row.get("status") == status]
+
+        if "order by" in normalized_sql:
+            if "order by id desc" in normalized_sql:
+                rows.sort(key=lambda row: row.get("id", 0), reverse=True)
+            elif "order by id" in normalized_sql:
+                rows.sort(key=lambda row: row.get("id", 0))
+            else:
+                rows.sort(key=lambda row: row.get("__order", 0))
+        else:
+            rows.sort(key=lambda row: row.get("__order", 0))
+
+        if "limit %s" in normalized_sql:
+            limit = params[param_index]
+            rows = rows[: int(limit)]
+
+        return [self._job_tuple(row) for row in rows]
+
+    def _update_job(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
+        if "set" not in sql.lower() or "where" not in sql.lower():
+            raise ValueError(f"Unsupported job update: {sql}")
+
+        lower = sql.lower()
+        assignments, where_clause = lower.split("where", 1)
+        set_clause = assignments.split("set", 1)[1]
+        updates = [part.strip() for part in set_clause.split(",") if part.strip()]
+
+        job_id = params[-1]
+        job = self._find_one("job", job_id)
+        if not job:
+            return []
+
+        value_iter = iter(params[:-1])
+        for assignment in updates:
+            column = assignment.split("=")[0].strip()
+            if assignment.endswith("now()"):
+                job[column] = self._tick()
+            else:
+                job[column] = next(value_iter)
+
+        if "returning" in lower:
+            return [self._job_tuple(job)]
+        return []
+
+    def _job_tuple(self, job: Dict[str, Any] | None) -> Tuple[Any, ...]:
+        if not job:
+            return ()
+        return (
+            job.get("id"),
+            job.get("job_type"),
+            job.get("status"),
+            job.get("payload"),
+            job.get("result"),
+            job.get("error"),
+            job.get("created_at"),
+            job.get("updated_at"),
+        )
 
 
 __all__ = ["FakeDatabase", "FakeConnection", "parse_insert", "NOW_SENTINEL"]
