@@ -147,6 +147,12 @@ class FakeCursor:
         self._index = len(self._rows)
         return list(remaining)
 
+    def __enter__(self) -> "FakeCursor":  # pragma: no cover - convenience
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # pragma: no cover - convenience
+        return False
+
 
 class FakeConnection:
     def __init__(self, db: "FakeDatabase") -> None:
@@ -201,7 +207,10 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            return self._handle_insert(stripped, params)
+            inserted_rows = self._handle_insert(stripped, params)
+            if "returning id" in normalized:
+                return [(row.get("id"),) for row in inserted_rows]
+            return []
 
         if "from episode where id = %s" in normalized:
             episode_id = params[0]
@@ -220,6 +229,9 @@ class FakeDatabase:
         if normalized.startswith("with latest_grade as") and "where c.episode_id = %s" in normalized:
             return self._select_episode_claims(params[0])
 
+        if normalized.startswith("select id, normalized_text, raw_text from claim"):
+            return self._select_claim_rows(normalized, params)
+
         if normalized.startswith("with latest_grade as") and "where c.topic = %s" in normalized:
             return self._select_topic_claims(params[0])
 
@@ -229,169 +241,65 @@ class FakeDatabase:
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
 
-        if normalized.startswith("select id, episode_id, text, word_count from transcript") and "where episode_id = %s" in normalized:
-            return self._select_transcript(params[0])
 
-        if normalized.startswith("select count(*) from transcript_chunk where transcript_id = %s"):
-            transcript_id = params[0]
-            count = sum(1 for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id)
+        if normalized.startswith(
+            "select count(*) from claim_evidence where claim_id = %s and stance is not null"
+        ):
+            claim_id = params[0]
+            count = sum(
+                1
+                for row in self.tables["claim_evidence"]
+                if row.get("claim_id") == claim_id and row.get("stance") is not None
+            )
             return [(count,)]
 
-        if normalized.startswith("delete from transcript_chunk where transcript_id = %s"):
-            transcript_id = params[0]
-            self.tables["transcript_chunk"] = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] != transcript_id]
+        if normalized.startswith("select id from evidence_source where pubmed_id = %s"):
+            pubmed_id = params[0]
+            for row in self.tables["evidence_source"]:
+                if row.get("pubmed_id") == pubmed_id:
+                    return [(row.get("id"),)]
+            return []
+
+        if normalized.startswith("select id from evidence_source where doi = %s"):
+            doi = params[0]
+            for row in self.tables["evidence_source"]:
+                if row.get("doi") == doi:
+                    return [(row.get("id"),)]
             return []
 
         if normalized.startswith(
-            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk"
-        ) and "where transcript_id = %s" in normalized:
-            transcript_id = params[0]
-            rows = [row for row in self.tables["transcript_chunk"] if row["transcript_id"] == transcript_id]
-            rows.sort(key=lambda r: r.get("chunk_index", 0))
-            return [
-                (
-                    row.get("id"),
-                    row.get("transcript_id"),
-                    row.get("chunk_index"),
-                    row.get("token_start"),
-                    row.get("token_end"),
-                    row.get("token_count"),
-                    row.get("text"),
-                    row.get("key_points"),
-                )
-                for row in rows
-            ]
-
-        if normalized.startswith("update transcript_chunk set key_points = %s where id = %s"):
-            key_points, chunk_id = params
-            for row in self.tables["transcript_chunk"]:
-                if row.get("id") == chunk_id:
-                    row["key_points"] = key_points
-                    break
-            return []
-
-        if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ) and "where status = %s" in normalized:
-            status = params[0]
-            jobs = [row for row in self.tables["job_queue"] if row.get("status") == status]
-            jobs.sort(key=lambda r: (-r.get("priority", 0), r.get("run_at", 0), r.get("id", 0)))
-            if jobs:
-                job = jobs[0]
-                return [
-                    (
-                        job.get("id"),
-                        job.get("job_type"),
-                        job.get("payload"),
-                        job.get("status"),
-                        job.get("priority"),
-                        job.get("run_at"),
-                        job.get("attempts"),
-                        job.get("max_attempts"),
-                        job.get("last_error"),
-                    )
-                ]
-            return []
-
-        if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ) and "where id = %s" in normalized:
-            job_id = params[0]
-            for job in self.tables["job_queue"]:
-                if job.get("id") == job_id:
-                    return [
-                        (
-                            job.get("id"),
-                            job.get("job_type"),
-                            job.get("payload"),
-                            job.get("status"),
-                            job.get("priority"),
-                            job.get("run_at"),
-                            job.get("attempts"),
-                            job.get("max_attempts"),
-                            job.get("last_error"),
-                        )
-                    ]
-            return []
-
-        if normalized.startswith(
-            "update job_queue set status = %s, attempts = attempts + 1, started_at = now(), updated_at = now() where id = %s"
+            "select stance, notes from claim_evidence where claim_id = %s and evidence_id = %s"
         ):
-            status, job_id = params
-            for job in self.tables["job_queue"]:
-                if job.get("id") == job_id:
-                    job["status"] = status
-                    job["attempts"] = job.get("attempts", 0) + 1
-                    job["started_at"] = self._tick()
-                    job["updated_at"] = self._tick()
-                    break
-            return []
+            claim_id, evidence_id = params
+            for row in self.tables["claim_evidence"]:
+                if row.get("claim_id") == claim_id and row.get("evidence_id") == evidence_id:
+                    return [(row.get("stance"), row.get("notes"))]
 
-        if normalized.startswith(
-            "update job_queue set status = %s, run_at = %s, last_error = %s, started_at = null, finished_at = null, updated_at = now() where id = %s"
-        ):
-            status, run_at, last_error, job_id = params
-            for job in self.tables["job_queue"]:
-                if job.get("id") == job_id:
-                    job["status"] = status
-                    job["run_at"] = run_at
-                    job["last_error"] = last_error
-                    job["started_at"] = None
-                    job["finished_at"] = None
-                    job["updated_at"] = self._tick()
-                    break
-            return []
-
-        if normalized.startswith(
-            "update job_queue set status = %s, finished_at = now(), last_error = %s, updated_at = now() where id = %s"
-        ):
-            status, last_error, job_id = params
-            for job in self.tables["job_queue"]:
-                if job.get("id") == job_id:
-                    job["status"] = status
-                    job["finished_at"] = self._tick()
-                    job["last_error"] = last_error
-                    job["updated_at"] = self._tick()
-                    break
             return []
 
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
 
-    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
-        statement = sql.strip().rstrip(";")
-        upper = statement.upper()
-        returning_columns: List[str] = []
-        match = re.search(r"\bRETURNING\b", upper)
-        if match:
-            main_part = statement[: match.start()].rstrip()
-            returning_part = statement[match.end() :].strip()
-            returning_columns = [col.strip() for col in returning_part.split(",") if col.strip()]
-        else:
-            main_part = statement
 
-        table, rows = parse_insert(main_part)
-        param_iter = iter(params)
-        inserted_rows: List[Dict[str, Any]] = []
+    def _handle_insert(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
+        table, rows = parse_insert(sql)
+        inserted: List[Dict[str, Any]] = []
+        param_index = 0
         for row in rows:
-            processed: Dict[str, Any] = {}
-            for column, value in row.items():
-                if value == "%s":
-                    try:
-                        processed[column] = next(param_iter)
-                    except StopIteration as exc:  # pragma: no cover - defensive guard
-                        raise ValueError("Not enough parameters for insert") from exc
+            resolved: Dict[str, Any] = {}
+            for key, value in row.items():
+                if isinstance(value, str) and value == "%s":
+                    if param_index >= len(params):
+                        raise ValueError("Not enough parameters supplied for insert")
+                    resolved[key] = params[param_index]
+                    param_index += 1
                 else:
-                    processed[column] = value
-            self._insert_row(table, processed)
-            inserted_rows.append(self.tables[table][-1])
+                    resolved[key] = value
+            inserted.append(self._insert_row(table, resolved))
+        return inserted
 
-        if returning_columns:
-            return [tuple(r.get(col) for col in returning_columns) for r in inserted_rows]
-        return []
-
-    def _insert_row(self, table: str, row: Dict[str, Any]) -> None:
+    def _insert_row(self, table: str, row: Dict[str, Any]) -> Dict[str, Any]:
         processed: Dict[str, Any] = {}
         for key, value in row.items():
             if value is NOW_SENTINEL:
@@ -428,6 +336,7 @@ class FakeDatabase:
             processed.setdefault("updated_at", self._tick())
 
         self.tables[table].append(processed)
+        return processed
 
     def _tick(self) -> int:
         self._clock += 1
@@ -548,25 +457,28 @@ class FakeDatabase:
         rows.sort(key=lambda r: (r[2] is None, -(r[2] or 0)))
         return rows
 
-    def _select_transcript(self, episode_id: int) -> List[Tuple[Any, ...]]:
-        transcripts = [t for t in self.tables["transcript"] if t.get("episode_id") == episode_id]
-        transcripts = [t for t in transcripts if t.get("text")]
-        transcripts.sort(
-            key=lambda t: (
-                -(t.get("word_count") or 0),
-                -t.get("id", 0),
-            )
-        )
-        if not transcripts:
-            return []
-        top = transcripts[0]
+
+    def _select_claim_rows(
+        self, normalized: str, params: Sequence[Any]
+    ) -> List[Tuple[Any, ...]]:
+        claims = list(self.tables["claim"])
+        param_index = 0
+        if " where " in normalized:
+            _, tail = normalized.split(" where ", 1)
+            where_clause = tail.split(" order by ", 1)[0]
+            if "id = any(%s)" in where_clause:
+                ids = set(params[param_index])
+                param_index += 1
+                claims = [c for c in claims if c.get("id") in ids]
+            if "episode_id = any(%s)" in where_clause:
+                episode_ids = set(params[param_index])
+                param_index += 1
+                claims = [c for c in claims if c.get("episode_id") in episode_ids]
+        claims.sort(key=lambda c: c.get("id", 0))
         return [
-            (
-                top.get("id"),
-                top.get("episode_id"),
-                top.get("text"),
-                top.get("word_count"),
-            )
+            (c.get("id"), c.get("normalized_text"), c.get("raw_text"))
+            for c in claims
+
         ]
 
 
