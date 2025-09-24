@@ -249,29 +249,29 @@ class AutoGradeService:
         return resolved
 
     def _fetch_evidence(self, claim_id: int) -> List[EvidenceItem]:
-        cur = self.conn.cursor()
-        cur.execute(
-            """
-            SELECT es.id, es.title, es.year, es.type, es.journal, es.doi, es.pubmed_id, es.url, ce.stance
-            FROM claim_evidence ce
-            JOIN evidence_source es ON es.id = ce.evidence_id
-            WHERE ce.claim_id = %s
-            ORDER BY es.year DESC NULLS LAST
-            """,
-            (claim_id,),
-        )
-        rows = cur.fetchall()
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT es.id, es.title, es.year, es.type, es.journal, es.doi, es.pubmed_id, es.url, ce.stance
+                FROM claim_evidence ce
+                JOIN evidence_source es ON es.id = ce.evidence_id
+                WHERE ce.claim_id = %s
+                ORDER BY es.year DESC NULLS LAST
+                """,
+                (claim_id,),
+            )
+            rows = cur.fetchall()
         return [EvidenceItem(stance=row[8], type=row[3]) for row in rows]
 
     def _store_grade(self, claim_id: int, grade: str, rationale: str) -> None:
-        cur = self.conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO claim_grade (claim_id, grade, rationale, rubric_version, graded_by)
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            (claim_id, grade, rationale, RUBRIC_VERSION, AUTO_GRADED_BY),
-        )
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO claim_grade (claim_id, grade, rationale, rubric_version, graded_by)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (claim_id, grade, rationale, RUBRIC_VERSION, AUTO_GRADED_BY),
+            )
 
 
 __all__ = [

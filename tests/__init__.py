@@ -1,3 +1,5 @@
 
-"""Test helpers package."""
+"""Test support package for unit tests."""
+
+__all__ = []
 
