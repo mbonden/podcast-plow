@@ -549,8 +549,10 @@ class FakeDatabase:
             "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
         ):
             rows = list(self.tables["job_queue"])
+            param_index = 0
             if "where status = %s and run_at <= now()" in normalized:
-                status = params[0]
+                status = params[param_index]
+                param_index += 1
                 rows = [row for row in rows if row.get("status") == status]
                 rows.sort(
                     key=lambda row: (
@@ -577,7 +579,7 @@ class FakeDatabase:
                 ]
 
             if "where id = %s" in normalized:
-                job_id = params[0]
+                job_id = params[param_index]
                 row = self._find_one("job_queue", job_id)
                 if not row:
                     return []
@@ -595,7 +597,26 @@ class FakeDatabase:
                     )
                 ]
 
-            rows.sort(key=lambda row: row.get("id", 0), reverse=True)
+            if "where status = %s" in normalized:
+                status = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("status") == status]
+
+            if "order by priority desc, run_at, id" in normalized:
+                rows.sort(
+                    key=lambda row: (
+                        -int(row.get("priority", 0) or 0),
+                        row.get("run_at") or 0,
+                        row.get("id", 0),
+                    )
+                )
+            else:
+                rows.sort(key=lambda row: row.get("id", 0), reverse=True)
+
+            if "limit %s" in normalized:
+                limit = int(params[param_index])
+                rows = rows[:limit]
+
             return [
                 (
                     row.get("id"),

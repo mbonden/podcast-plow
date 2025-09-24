@@ -202,10 +202,38 @@ def mark_job_failed(
     )
 
 
+def list_jobs(conn, *, status: str | None = None, limit: int | None = None) -> list[Job]:
+    """Return queued jobs ordered by priority and run time."""
+
+    params: list[Any] = []
+    sql = (
+        """
+        SELECT id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error
+        FROM job_queue
+        """
+    )
+    if status is not None:
+        sql += " WHERE status = %s"
+        params.append(status)
+
+    sql += " ORDER BY priority DESC, run_at, id"
+
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(int(limit))
+
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(params))
+        rows = cur.fetchall()
+
+    return [_row_to_job(row) for row in rows]
+
+
 __all__ = [
     "Job",
     "enqueue_job",
     "dequeue_job",
     "mark_job_done",
     "mark_job_failed",
+    "list_jobs",
 ]

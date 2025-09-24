@@ -185,6 +185,40 @@ def enqueue_auto_grade(
     typer.echo(f"Enqueued auto-grade job {job.id} targeting linked claims.")
 
 
+@jobs_app.command("list")
+def list_jobs(
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        "-s",
+        help="Only show jobs with the provided status (queued, running, failed, done)",
+    ),
+    limit: Optional[int] = typer.Option(
+        None,
+        "--limit",
+        "-l",
+        min=1,
+        help="Restrict the number of jobs displayed",
+    ),
+) -> None:
+    normalized_status = status.strip().lower() if status else None
+    if normalized_status not in {None, "queued", "running", "failed", "done"}:
+        raise typer.BadParameter("Status must be one of queued, running, failed, or done")
+
+    with db_conn() as conn:
+        jobs = jobs_service.list_jobs(conn, status=normalized_status, limit=limit)
+
+    if not jobs:
+        typer.echo("No jobs match the provided filters.")
+        return
+
+    for job in jobs:
+        run_at = job.run_at.isoformat() if job.run_at else "?"
+        typer.echo(
+            f"[{job.id}] {job.job_type} ({job.status}) priority={job.priority} run_at={run_at}"
+        )
+
+
 @app.callback()
 def main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging")) -> None:
     _configure_logging(verbose)
