@@ -16,14 +16,32 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
 app = FastAPI(title="podcast-plow API", version="0.1.0")
 app.include_router(jobs_router)
 
+
 def db_conn():
     return db_connection()
+
 
 class EpisodeSummary(BaseModel):
     episode_id: int
     title: str
     tl_dr: str | None = None
     narrative: str | None = None
+
+
+def _parse_bullet_points(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    items: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for prefix in ("- ", "* ", "• "):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix) :].strip()
+                break
+        items.append(stripped)
+    return items
 
 @app.get("/healthz")
 def healthz():
@@ -74,6 +92,43 @@ def get_episode(episode_id: int):
             })
         episode["claims"] = claims
         return episode
+
+
+@app.get("/episodes/{episode_id}/outline")
+def get_episode_outline(episode_id: int):
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, title FROM episode WHERE id = %s", (episode_id,))
+        row = cur.fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={"error": "episode not found"})
+
+        cur.execute(
+            """
+            SELECT start_ms, end_ms, heading, bullet_points
+            FROM episode_outline
+            WHERE episode_id = %s
+            ORDER BY start_ms NULLS LAST, id
+            """,
+            (episode_id,),
+        )
+        outline_rows = cur.fetchall()
+        if not outline_rows:
+            return JSONResponse(status_code=404, content={"error": "outline not available"})
+
+        outline_items = []
+        for start_ms, end_ms, heading, bullet_points in outline_rows:
+            item = {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "heading": heading,
+            }
+            bullets = _parse_bullet_points(bullet_points)
+            if bullets:
+                item["bullet_points"] = bullets
+            outline_items.append(item)
+
+        return {"episode_id": row[0], "title": row[1], "outline": outline_items}
 
 @app.get("/topics/{topic}/claims")
 def get_topic_claims(topic: str):

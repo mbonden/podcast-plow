@@ -206,6 +206,7 @@ class FakeDatabase:
             "podcast": [],
             "episode": [],
             "episode_summary": [],
+            "episode_outline": [],
             "claim": [],
             "evidence_source": [],
             "claim_evidence": [],
@@ -218,6 +219,7 @@ class FakeDatabase:
             "podcast": 1,
             "episode": 1,
             "episode_summary": 1,
+            "episode_outline": 1,
             "claim": 1,
             "evidence_source": 1,
             "claim_grade": 1,
@@ -264,6 +266,32 @@ class FakeDatabase:
                 top = summaries[0]
                 return [(top.get("tl_dr"), top.get("narrative"))]
             return []
+
+        if normalized.startswith(
+            "select start_ms, end_ms, heading, bullet_points from episode_outline where episode_id = %s order by start_ms nulls last, id"
+        ):
+            episode_id = params[0]
+            rows = [
+                row
+                for row in self.tables["episode_outline"]
+                if row.get("episode_id") == episode_id
+            ]
+            rows.sort(
+                key=lambda row: (
+                    row.get("start_ms") is None,
+                    row.get("start_ms") if row.get("start_ms") is not None else 0,
+                    row.get("id", 0),
+                )
+            )
+            return [
+                (
+                    row.get("start_ms"),
+                    row.get("end_ms"),
+                    row.get("heading"),
+                    row.get("bullet_points"),
+                )
+                for row in rows
+            ]
 
         if normalized.startswith("delete from episode_summary where episode_id = %s and created_by in (%s, %s)"):
             episode_id, creator_a, creator_b = params
