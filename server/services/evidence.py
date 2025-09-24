@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from xml.etree import ElementTree as ET
@@ -407,8 +408,40 @@ class PubMedClient:
 
     def __init__(self, session: Optional[requests.Session] = None) -> None:
         self.session = session or requests.Session()
+        self._min_interval = self._compute_min_interval()
+        self._last_request: Optional[float] = None
+
+    @staticmethod
+    def _compute_min_interval() -> Optional[float]:
+        """Return the minimum spacing between requests based on env config."""
+
+        raw_qps = os.getenv("PLOW_PUBMED_QPS")
+        qps: Optional[float] = None
+        if raw_qps:
+            try:
+                qps = float(raw_qps)
+            except ValueError:
+                logger.warning("Invalid PLOW_PUBMED_QPS value '%s'; using default", raw_qps)
+        if qps is None:
+            qps = 3.0
+        if qps <= 0:
+            return None
+        return 1.0 / qps
+
+    def _throttle(self) -> None:
+        if not self._min_interval:
+            return
+        now = time.monotonic()
+        if self._last_request is not None:
+            elapsed = now - self._last_request
+            remaining = self._min_interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+                now = time.monotonic()
+        self._last_request = now
 
     def search(self, query: str, *, retmax: int = 30) -> List[str]:
+        self._throttle()
         params = {
             "db": "pubmed",
             "term": query,
@@ -429,6 +462,7 @@ class PubMedClient:
     def fetch_details(self, ids: Sequence[str]) -> List[PubMedArticle]:
         if not ids:
             return []
+        self._throttle()
         params = {
             "db": "pubmed",
             "id": ",".join(ids),
