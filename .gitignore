@@ -3,4 +3,6 @@ __pycache__/
 *.pyc
 .env
 infra/db_data/
-"@ | Out-File -Encoding utf8 .gitignore
+.pytest_cache/
+.DS_Store
+"@" | Out-File -Encoding utf8 -Append .gitignore
