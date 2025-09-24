@@ -8,12 +8,23 @@ in-memory substitute that understands the handful of SQL statements used in
 the API handlers and seed data.
 """
 
+import datetime as dt
 from dataclasses import dataclass
 import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 
 NOW_SENTINEL = object()
+
+
+def _as_datetime(value: Any) -> dt.datetime:
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt.timezone.utc)
+        return value
+    if isinstance(value, (int, float)):
+        return dt.datetime.fromtimestamp(float(value), tz=dt.timezone.utc)
+    return dt.datetime.now(tz=dt.timezone.utc)
 
 
 def _normalize_sql(sql: str) -> str:
@@ -200,6 +211,7 @@ class FakeDatabase:
             "claim_grade": [],
             "transcript": [],
             "transcript_chunk": [],
+            "job_queue": [],
             "job": [],
             "job_queue": [],
         }
@@ -212,6 +224,7 @@ class FakeDatabase:
             "claim_grade": 1,
             "transcript": 1,
             "transcript_chunk": 1,
+            "job_queue": 1,
             "job": 1,
             "job_queue": 1,
         }
@@ -253,6 +266,19 @@ class FakeDatabase:
             if summaries:
                 top = summaries[0]
                 return [(top.get("tl_dr"), top.get("narrative"))]
+            return []
+
+        if normalized.startswith("delete from episode_summary where episode_id = %s and created_by in (%s, %s)"):
+            episode_id, creator_a, creator_b = params
+            allowed = {creator_a, creator_b}
+            self.tables["episode_summary"] = [
+                row
+                for row in self.tables["episode_summary"]
+                if not (
+                    row.get("episode_id") == episode_id
+                    and row.get("created_by") in allowed
+                )
+            ]
             return []
 
         if normalized.startswith("with latest_grade as") and "where c.episode_id = %s" in normalized:
@@ -409,6 +435,14 @@ class FakeDatabase:
             ]
             return []
 
+        if normalized.startswith("update transcript_chunk set key_points = %s where id = %s"):
+            key_points, chunk_id = params
+            row = self._find_one("transcript_chunk", chunk_id)
+            if not row:
+                return []
+            row["key_points"] = key_points
+            return []
+
         if normalized.startswith(
             "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk where transcript_id = %s"
         ):
@@ -497,6 +531,46 @@ class FakeDatabase:
             row["type"] = params[4]
             row["journal"] = params[5]
             return []
+
+        if normalized.startswith(
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
+        ):
+            status = params[0] if params else None
+            type_filters = list(params[1:])
+            candidates: List[Tuple[Dict[str, Any], dt.datetime]] = []
+            now = dt.datetime.now(tz=dt.timezone.utc)
+            for row in self.tables["job_queue"]:
+                if status is not None and row.get("status") != status:
+                    continue
+                run_at = _as_datetime(row.get("run_at"))
+                if run_at > now:
+                    continue
+                if type_filters and row.get("job_type") not in type_filters:
+                    continue
+                candidates.append((row, run_at))
+            if not candidates:
+                return []
+            candidates.sort(
+                key=lambda item: (
+                    -int(item[0].get("priority", 0) or 0),
+                    item[1],
+                    int(item[0].get("id", 0) or 0),
+                )
+            )
+            row, _ = candidates[0]
+            return [
+                (
+                    row.get("id"),
+                    row.get("job_type"),
+                    row.get("payload"),
+                    row.get("status"),
+                    row.get("priority"),
+                    row.get("run_at"),
+                    row.get("attempts"),
+                    row.get("max_attempts"),
+                    row.get("last_error"),
+                )
+            ]
 
         if normalized.startswith(
             "select id, job_type, status, payload, result, error, created_at, updated_at from job where id = %s"
@@ -664,6 +738,7 @@ class FakeDatabase:
                 return []
             row["status"] = status
             row["attempts"] = int(row.get("attempts", 0) or 0) + 1
+
             row["started_at"] = self._tick()
             row["updated_at"] = self._tick()
             return []
@@ -754,6 +829,18 @@ class FakeDatabase:
         if table == "claim_grade":
             processed.setdefault("rubric_version", "v1")
             processed.setdefault("graded_by", "auto-grader")
+
+        if table == "job_queue":
+            processed.setdefault("status", "queued")
+            processed["priority"] = int(processed.get("priority", 0) or 0)
+            processed["attempts"] = int(processed.get("attempts", 0) or 0)
+            processed["max_attempts"] = int(processed.get("max_attempts", 3) or 3)
+            processed["run_at"] = _as_datetime(processed.get("run_at"))
+            processed.setdefault("last_error", None)
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", processed.get("created_at"))
+            processed.setdefault("started_at", None)
+            processed.setdefault("finished_at", None)
 
         if table == "job":
             processed.setdefault("status", "queued")

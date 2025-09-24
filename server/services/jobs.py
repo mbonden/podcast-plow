@@ -6,7 +6,7 @@ import datetime as dt
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -98,18 +98,34 @@ def enqueue_job(
     return job
 
 
-def dequeue_job(conn) -> Job | None:
+def dequeue_job(conn, job_types: Sequence[str] | None = None) -> Job | None:
+    filters = ["status = %s", "run_at <= now()"]
+    params: list[Any] = ["queued"]
+
+    normalized_types: list[str] = []
+    if job_types:
+        for job_type in job_types:
+            if job_type is None:
+                continue
+            cleaned = str(job_type).strip()
+            if cleaned:
+                normalized_types.append(cleaned)
+
+    if normalized_types:
+        placeholders = ", ".join(["%s"] * len(normalized_types))
+        filters.append(f"job_type IN ({placeholders})")
+        params.extend(normalized_types)
+
+    sql = """
+        SELECT id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error
+        FROM job_queue
+    """
+    if filters:
+        sql += " WHERE " + " AND ".join(filters)
+    sql += " ORDER BY priority DESC, run_at, id LIMIT 1"
+
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error
-            FROM job_queue
-            WHERE status = %s AND run_at <= now()
-            ORDER BY priority DESC, run_at, id
-            LIMIT 1
-            """,
-            ("queued",),
-        )
+        cur.execute(sql, tuple(params))
         row = cur.fetchone()
     if not row:
         return None
