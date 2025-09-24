@@ -533,47 +533,9 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ):
-            status = params[0] if params else None
-            type_filters = list(params[1:])
-            candidates: List[Tuple[Dict[str, Any], dt.datetime]] = []
-            now = dt.datetime.now(tz=dt.timezone.utc)
-            for row in self.tables["job_queue"]:
-                if status is not None and row.get("status") != status:
-                    continue
-                run_at = _as_datetime(row.get("run_at"))
-                if run_at > now:
-                    continue
-                if type_filters and row.get("job_type") not in type_filters:
-                    continue
-                candidates.append((row, run_at))
-            if not candidates:
-                return []
-            candidates.sort(
-                key=lambda item: (
-                    -int(item[0].get("priority", 0) or 0),
-                    item[1],
-                    int(item[0].get("id", 0) or 0),
-                )
-            )
-            row, _ = candidates[0]
-            return [
-                (
-                    row.get("id"),
-                    row.get("job_type"),
-                    row.get("payload"),
-                    row.get("status"),
-                    row.get("priority"),
-                    row.get("run_at"),
-                    row.get("attempts"),
-                    row.get("max_attempts"),
-                    row.get("last_error"),
-                )
-            ]
 
-        if normalized.startswith(
-            "select id, job_type, status, payload, result, error, created_at, updated_at from job where id = %s"
+            "select id, job_type, status, payload, result, error, created_at, updated_at, priority from job where id = %s"
+
         ):
             job_id = params[0]
             row = self._find_one("job", job_id)
@@ -589,11 +551,39 @@ class FakeDatabase:
                     row.get("error"),
                     row.get("created_at"),
                     row.get("updated_at"),
+                    row.get("priority"),
                 )
             ]
 
         if normalized.startswith(
-            "select id, job_type, status, payload, result, error, created_at, updated_at from job"
+            "select id, job_type, status, payload, result, error, created_at, updated_at, priority from job where job_type = %s and payload = %s"
+        ):
+            job_type, payload = params
+            rows = [
+                row
+                for row in self.tables["job"]
+                if row.get("job_type") == job_type and row.get("payload") == payload
+            ]
+            rows.sort(key=lambda row: row.get("id", 0), reverse=True)
+            if not rows:
+                return []
+            top = rows[0]
+            return [
+                (
+                    top.get("id"),
+                    top.get("job_type"),
+                    top.get("status"),
+                    top.get("payload"),
+                    top.get("result"),
+                    top.get("error"),
+                    top.get("created_at"),
+                    top.get("updated_at"),
+                    top.get("priority"),
+                )
+            ]
+
+        if normalized.startswith(
+            "select id, job_type, status, payload, result, error, created_at, updated_at, priority from job"
         ):
             rows = list(self.tables["job"])
             param_index = 0
@@ -601,10 +591,43 @@ class FakeDatabase:
                 status = params[param_index]
                 param_index += 1
                 rows = [row for row in rows if row.get("status") == status]
-            rows.sort(key=lambda row: row.get("id", 0), reverse="order by id desc" in normalized)
+            if "where job_type = %s" in normalized:
+                job_type = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("job_type") == job_type]
+            elif "and job_type = %s" in normalized:
+                job_type = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("job_type") == job_type]
+
+            if "order by priority desc" in normalized:
+                rows.sort(
+                    key=lambda row: (
+                        row.get("priority") in (None, ""),
+                        -int(row.get("priority") or 0),
+                        -row.get("id", 0),
+                    )
+                )
+            else:
+                rows.sort(
+                    key=lambda row: row.get("id", 0),
+                    reverse="order by id desc" in normalized,
+                )
+
+            limit: int | None = None
             if "limit %s" in normalized:
                 limit = int(params[param_index])
+                param_index += 1
+            offset = 0
+            if "offset %s" in normalized:
+                offset = int(params[param_index])
+                param_index += 1
+
+            if offset:
+                rows = rows[offset:]
+            if limit is not None:
                 rows = rows[:limit]
+
             return [
                 (
                     row.get("id"),
@@ -615,6 +638,7 @@ class FakeDatabase:
                     row.get("error"),
                     row.get("created_at"),
                     row.get("updated_at"),
+                    row.get("priority"),
                 )
                 for row in rows
             ]
@@ -849,6 +873,7 @@ class FakeDatabase:
             processed.setdefault("error", None)
             processed.setdefault("created_at", self._tick())
             processed.setdefault("updated_at", processed.get("created_at"))
+            processed.setdefault("priority", 0)
 
         if table == "job_queue":
             processed.setdefault("status", "queued")
