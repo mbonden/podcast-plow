@@ -3,10 +3,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+
 from typing import Any, Sequence
+
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from server.services import jobs as jobs_service
 
 try:  # pragma: no cover - executed in Docker container
     from server.db.utils import db_conn
@@ -23,10 +27,6 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
     from services import jobs as jobs_service
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-JOB_RETURNING_COLUMNS = (
-    "id, job_type, status, payload, result, error, created_at, updated_at, priority"
-)
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
 ACTIVE_STATUSES = {"queued", "running"}
 
@@ -217,34 +217,17 @@ class JobEnqueueResponse(BaseModel):
     rejected: list[RejectedJob]
 
 
-def _row_to_job(row: Sequence[Any] | None) -> JobResponse:
-    if row is None:
-        raise ValueError("Expected database row but received None")
-    if isinstance(row, dict):
-        data = row
-    else:
-        keys = (
-            "id",
-            "job_type",
-            "status",
-            "payload",
-            "result",
-            "error",
-            "created_at",
-            "updated_at",
-            "priority",
-        )
-        data = dict(zip(keys, row, strict=False))
+def _job_to_response(job: jobs_service.Job) -> JobResponse:
     return JobResponse(
-        id=data.get("id"),
-        job_type=data.get("job_type"),
-        status=data.get("status"),
-        payload=data.get("payload"),
-        result=data.get("result"),
-        error=data.get("error"),
-        created_at=_normalize_timestamp(data.get("created_at")),
-        updated_at=_normalize_timestamp(data.get("updated_at")),
-        priority=int(data.get("priority") or 0),
+        id=job.id,
+        job_type=job.job_type,
+        status=job.status,
+        payload=job.payload,
+        result=job.result,
+        error=job.last_error,
+        created_at=_normalize_timestamp(job.created_at),
+        updated_at=_normalize_timestamp(job.updated_at),
+        priority=int(job.priority or 0),
     )
 
 
@@ -260,6 +243,7 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
     fingerprint_misses: set[str] = set()
 
     with db_conn() as conn:
+
         with conn.cursor() as cur:
             for job_spec in request.jobs:
                 payload = deepcopy(job_spec.payload)
@@ -320,6 +304,7 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
     return JobEnqueueResponse(accepted=accepted, reused=reused, rejected=rejected)
 
 
+
 @router.get("", response_model=JobListResponse)
 def list_jobs(
     status: str | None = Query(
@@ -345,40 +330,28 @@ def list_jobs(
 ) -> JobListResponse:
     """Return jobs ordered from newest to oldest with optional filtering."""
 
-    params: list[Any] = []
-    filters: list[str] = []
+    normalized_status: str | None = None
     if status is not None:
         normalized_status = status.strip().lower()
         if normalized_status not in ALLOWED_STATUSES:
             raise HTTPException(status_code=400, detail="invalid status filter")
-        filters.append("status = %s")
-        params.append(normalized_status)
 
+    normalized_type: str | None = None
     if job_type is not None:
         normalized_type = job_type.strip()
         if not normalized_type:
             raise HTTPException(status_code=400, detail="invalid type filter")
-        filters.append("job_type = %s")
-        params.append(normalized_type)
-
-    sql = f"SELECT {JOB_RETURNING_COLUMNS} FROM job"
-    if filters:
-        sql += " WHERE " + " AND ".join(filters)
-    sql += " ORDER BY priority DESC, id DESC"
-    if limit is not None:
-        sql += " LIMIT %s"
-        params.append(limit)
-    if offset:
-        sql += " OFFSET %s"
-        params.append(offset)
-
     with db_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+        jobs = jobs_service.list_jobs_admin(
+            conn,
+            status=normalized_status,
+            job_type=normalized_type,
+            limit=limit,
+            offset=offset,
+        )
 
-    jobs = [_row_to_job(row) for row in rows]
-    return JobListResponse(jobs=jobs, count=len(jobs))
+    responses = [_job_to_response(job) for job in jobs]
+    return JobListResponse(jobs=responses, count=len(responses))
 
 
 @router.get("/{job_id}", response_model=JobResponse)
@@ -386,17 +359,12 @@ def get_job(job_id: int) -> JobResponse:
     """Return a single job by identifier."""
 
     with db_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT {JOB_RETURNING_COLUMNS} FROM job WHERE id = %s",
-                (job_id,),
-            )
-            row = cur.fetchone()
+        job = jobs_service.get_job(conn, job_id)
 
-    if not row:
+    if job is None:
         raise HTTPException(status_code=404, detail="job not found")
 
-    return _row_to_job(row)
+    return _job_to_response(job)
 
 
 __all__ = [

@@ -14,7 +14,10 @@ services:
       - db_data:/var/lib/postgresql/data
 
   server:
-    image: python:3.11-slim
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    image: podcast-plow-server
     container_name: podcast_plow_server
     depends_on:
       - db
@@ -23,23 +26,23 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
     volumes:
       - ../server:/app
-    command: bash -lc "pip install --no-cache-dir fastapi 'uvicorn[standard]' 'psycopg[binary]' 'pydantic==2.*' python-dotenv feedparser requests lxml sumy youtube-transcript-api && uvicorn app:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
 
   ingest:
-    image: python:3.11-slim
+    image: podcast-plow-server
     container_name: podcast_plow_ingest
     depends_on:
       - db
-    working_dir: /app
+    working_dir: /workspace
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
     volumes:
       - ../server:/app
+      - ..:/workspace
       # mount feeds.txt read-only inside the container at /infra/feeds.txt
       - ./feeds.txt:/infra/feeds.txt:ro
-    command: bash -lc "pip install --no-cache-dir typer feedparser requests lxml 'psycopg[binary]' youtube-transcript-api sumy beautifulsoup4 html5lib readability-lxml && sleep infinity"
+    command: ["sleep", "infinity"]
 
 volumes:
   db_data:

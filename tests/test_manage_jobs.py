@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -43,9 +42,7 @@ def test_jobs_enqueue_summarize_adds_queue_entries(fake_db: FakeDatabase) -> Non
     assert len(rows) == 2
     assert all(row["job_type"] == "summarize" for row in rows)
 
-    payload_episode_ids = {
-        json.loads(row["payload"]).get("episode_id") for row in rows
-    }
+    payload_episode_ids = {row["payload"].get("episode_id") for row in rows}
     assert payload_episode_ids == {1, 2}
 
 
