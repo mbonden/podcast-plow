@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
-from typing import Iterable, List
+from typing import Any, Iterable, List
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -46,6 +46,27 @@ def load_statements() -> List[str]:
     if current:
         statements.append("\n".join(current))
     return statements
+
+
+def _iter_keys(payload: Any) -> Iterable[str]:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            yield key
+            yield from _iter_keys(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_keys(item)
+
+
+def _iter_strings(payload: Any) -> Iterable[str]:
+    if isinstance(payload, str):
+        yield payload
+    elif isinstance(payload, dict):
+        for value in payload.values():
+            yield from _iter_strings(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_strings(item)
 
 
 @pytest.fixture
@@ -133,6 +154,32 @@ def test_search_endpoint_matches_claims(seeded_client: TestClient) -> None:
     payload = response.json()
     assert payload["q"] == "ketones"
     assert any(item["id"] == 1 for item in payload["claims"])
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/episodes/1", None),
+        ("/episodes/2", None),
+        ("/episodes/3", None),
+        ("/topics/ketones/claims", None),
+        ("/claims/1", None),
+        ("/search", {"q": "ketones"}),
+    ],
+)
+def test_api_endpoints_do_not_expose_transcripts(
+    seeded_client: TestClient, path: str, params: dict | None
+) -> None:
+    response = seeded_client.get(path, params=params)
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert all(key.lower() != "transcript" for key in _iter_keys(payload))
+
+    for transcript_text in TRANSCRIPT_TEXT_BY_EPISODE.values():
+        assert transcript_text not in response.text
+        for text_value in _iter_strings(payload):
+            assert transcript_text not in text_value
 
 
 def test_search_endpoint_matches_episodes(seeded_client: TestClient) -> None:
