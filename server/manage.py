@@ -15,9 +15,13 @@ from services import claims as claims_service
 from services import jobs as jobs_service
 from services import summarize as summarize_service
 
+logger = logging.getLogger(__name__)
+
 app = typer.Typer(help="Podcast ingestion and summarisation utilities")
+jobs_app = typer.Typer(help="Background job helpers")
 enqueue_app = typer.Typer(help="Job queue helpers")
-app.add_typer(enqueue_app, name="enqueue")
+jobs_app.add_typer(enqueue_app, name="enqueue")
+app.add_typer(jobs_app, name="jobs")
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -118,22 +122,50 @@ def discover(
     typer.echo(f"Inserted {inserted} new episodes from feeds in {feeds}.")
 
 
-@app.command()
+@jobs_app.command()
 def work(
-    once: bool = typer.Option(False, "--once", help="Process at most one job and then exit"),
+    once: bool = typer.Option(False, "--once", help="Process a single job and then exit"),
     loop: bool = typer.Option(False, "--loop", help="Continuously poll for new jobs"),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds to wait between polls when idle"),
+    job_type: Optional[List[str]] = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="Only process jobs matching the provided type. Use multiple --type options to allow more than one type.",
+    ),
+    max_jobs: Optional[int] = typer.Option(
+        None,
+        "--max",
+        min=1,
+        help="Maximum number of jobs to process before exiting.",
+    ),
 ) -> None:
     if once and loop:
         raise typer.BadParameter("Choose either --once or --loop, not both")
+    if not once and not loop:
+        raise typer.BadParameter("Specify either --once or --loop")
 
-    should_loop = loop or not once
     poll_interval = max(poll_interval, 0.1)
+    should_loop = loop
+
+    remaining: Optional[int] = max_jobs
+    if once:
+        remaining = 1 if remaining is None else min(remaining, 1)
+
+    job_types: List[str] = []
+    if job_type:
+        for entry in job_type:
+            cleaned = (entry or "").strip()
+            if cleaned:
+                job_types.append(cleaned)
 
     while True:
+        if remaining is not None and remaining <= 0:
+            break
+
         job: jobs_service.Job | None = None
         with db_conn() as conn:
-            job = jobs_service.dequeue_job(conn)
+            job = jobs_service.dequeue_job(conn, job_types=job_types or None)
             if job is None:
                 # Close connection before potentially sleeping
                 pass
@@ -155,6 +187,8 @@ def work(
             typer.echo("No queued jobs available.")
             break
 
+        if remaining is not None:
+            remaining -= 1
         if not should_loop:
             break
 
