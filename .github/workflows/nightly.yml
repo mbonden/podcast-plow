@@ -1,0 +1,169 @@
+name: Nightly pipeline
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/podcast_plow
+  PLOW_PUBMED_QPS: '0.5'
+  EPISODES_PER_SHOW: '2'
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: podcast_plow
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d podcast_plow" --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt
+          pip install -r requirements.txt
+
+      - name: Wait for database
+        run: |
+          python - <<'PY'
+          import os
+          import time
+          import psycopg
+
+          dsn = os.environ["DATABASE_URL"]
+          for attempt in range(30):
+              try:
+                  with psycopg.connect(dsn) as conn:
+                      with conn.cursor() as cur:
+                          cur.execute("SELECT 1")
+                  break
+              except Exception as exc:  # pragma: no cover - integration guard
+                  if attempt == 29:
+                      raise
+                  time.sleep(2)
+          else:
+              raise SystemExit("Database never became ready")
+          PY
+
+      - name: Apply database schema
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import psycopg
+
+          dsn = os.environ["DATABASE_URL"]
+          init_dir = Path("infra/initdb")
+          sql_files = sorted(init_dir.glob("*.sql"))
+          if not sql_files:
+              raise SystemExit("No SQL files found in infra/initdb")
+
+          with psycopg.connect(dsn, autocommit=True) as conn:
+              for path in sql_files:
+                  sql = path.read_text()
+                  with conn.cursor() as cur:
+                      cur.execute(sql)
+                  print(f"Applied {path.name}")
+          PY
+
+      - name: Prepare feeds file
+        run: |
+          sudo mkdir -p /infra
+          sudo cp infra/feeds.txt /infra/feeds.txt
+
+      - name: Discover new episodes
+        run: |
+          python -m server.manage discover --feeds /infra/feeds.txt
+
+      - name: Select latest episodes per show
+        id: select_episodes
+        run: |
+          python - <<'PY'
+          import os
+
+          import psycopg
+
+          per_show = int(os.environ.get("EPISODES_PER_SHOW", "2"))
+          dsn = os.environ["DATABASE_URL"]
+
+          query = """
+          WITH ranked AS (
+              SELECT e.id,
+                     ROW_NUMBER() OVER (
+                         PARTITION BY e.podcast_id
+                         ORDER BY e.published_at DESC NULLS LAST, e.id DESC
+                     ) AS rn
+              FROM episode e
+              JOIN transcript t ON t.episode_id = e.id
+          )
+          SELECT id FROM ranked WHERE rn <= %s ORDER BY id;
+          """
+
+          with psycopg.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  cur.execute(query, (per_show,))
+                  rows = cur.fetchall()
+
+          ids = ",".join(str(row[0]) for row in rows)
+          if ids:
+              print(f"Target episodes: {ids}")
+          else:
+              print("No episodes with transcripts found")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"episode_ids={ids}\n")
+          PY
+
+      - name: Enqueue summarize jobs
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage enqueue summarize --episode-ids "${{ steps.select_episodes.outputs.episode_ids }}"
+
+      - name: Enqueue extract claim jobs
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage enqueue extract-claims --episode-ids "${{ steps.select_episodes.outputs.episode_ids }}"
+
+      - name: Run summarization and extraction workers
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage jobs work --loop --max 100 --poll-interval 1 --type summarize --type extract_claims
+
+      - name: Link evidence for episodes
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m worker.enqueue link-evidence --episode-ids "${{ steps.select_episodes.outputs.episode_ids }}" --min-results 2 --max-results 6
+
+      - name: Enqueue auto-grade jobs
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage enqueue auto-grade --episode-ids "${{ steps.select_episodes.outputs.episode_ids }}"
+
+      - name: Run auto-grade worker
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage jobs work --loop --max 50 --poll-interval 1 --type auto_grade
+
+      - name: Show completed jobs
+        if: steps.select_episodes.outputs.episode_ids != ''
+        run: |
+          python -m server.manage jobs list --status done
