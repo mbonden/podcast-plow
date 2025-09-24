@@ -183,13 +183,16 @@ def compute_grade(evidence_items: Iterable[EvidenceItem]) -> tuple[str, str]:
         grade = "unsupported"
 
     summary = _format_summary(meta, rct, observational, weak)
-    rationale = f"Auto-graded as {grade} based on {summary}."
+    rationale_parts = [
+        f"Auto-graded as {grade} because supporting evidence includes {summary}."
+    ]
     if total_refute:
+        rationale_parts.append("Conflicting evidence reduced confidence.")
         ref_summary = _format_summary(
             refute["meta"], refute["rct"], refute["observational"], refute["weak"]
         )
-        rationale += f" Refuting evidence noted ({ref_summary})."
-    return grade, rationale
+        rationale_parts.append(f"Refuting evidence noted ({ref_summary}).")
+    return grade, " ".join(part.strip() for part in rationale_parts if part)
 
 
 class AutoGradeService:

@@ -199,6 +199,8 @@ class FakeDatabase:
             "claim_evidence": [],
             "claim_grade": [],
             "transcript": [],
+            "transcript_chunk": [],
+            "job": [],
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -208,6 +210,8 @@ class FakeDatabase:
             "evidence_source": 1,
             "claim_grade": 1,
             "transcript": 1,
+            "transcript_chunk": 1,
+            "job": 1,
         }
         self._insert_order = 0
         self._clock = 0
@@ -220,9 +224,19 @@ class FakeDatabase:
         normalized = _normalize_sql(stripped)
 
         if normalized.startswith("insert into"):
-            inserted = self._handle_insert(stripped, params)
-            if " returning " in normalized:
-                return [(row.get("id"),) for row in inserted]
+            returning_columns: List[str] | None = None
+            match = re.search(r"\breturning\b", stripped, re.IGNORECASE)
+            statement = stripped
+            if match:
+                returning_part = stripped[match.end() :].strip().rstrip(";")
+                statement = stripped[: match.start()].strip()
+                returning_columns = [col.strip() for col in returning_part.split(",") if col.strip()]
+            inserted = self._handle_insert(statement, params)
+            if returning_columns:
+                rows: List[Tuple[Any, ...]] = []
+                for row in inserted:
+                    rows.append(tuple(row.get(column) for column in returning_columns))
+                return rows
             return []
 
         if "from episode where id = %s" in normalized:
@@ -248,8 +262,64 @@ class FakeDatabase:
         if normalized.startswith("with latest_grade as") and "where c.id = %s" in normalized:
             return self._select_claim_detail(params[0])
 
+        if normalized == "select id, episode_id from claim order by id":
+            rows = sorted(self.tables["claim"], key=lambda r: r.get("id", 0))
+            return [
+                (row.get("id"), row.get("episode_id"))
+                for row in rows
+            ]
+
+        if normalized.startswith(
+            "select id, normalized_text from claim where episode_id = %s order by id"
+        ):
+            episode_id = params[0]
+            rows = [
+                (row.get("id"), row.get("normalized_text"))
+                for row in sorted(
+                    self.tables["claim"],
+                    key=lambda r: r.get("id", 0),
+                )
+                if row.get("episode_id") == episode_id
+            ]
+            return rows
+
         if normalized.startswith("select es.id, es.title") and "from claim_evidence" in normalized:
             return self._select_claim_evidence(params[0])
+
+        if normalized.startswith("delete from claim where id = %s"):
+            claim_id = params[0]
+            self.tables["claim"] = [
+                row for row in self.tables["claim"] if row.get("id") != claim_id
+            ]
+            return []
+
+        if normalized.startswith("update claim set raw_text = %s"):
+            (
+                raw_text,
+                normalized_text,
+                topic,
+                domain,
+                risk_level,
+                start_ms,
+                end_ms,
+                claim_id,
+            ) = params
+            row = self._find_one("claim", claim_id)
+            if not row:
+                return []
+            row.update(
+                {
+                    "raw_text": raw_text,
+                    "normalized_text": normalized_text,
+                    "topic": topic,
+                    "domain": domain,
+                    "risk_level": risk_level,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                }
+            )
+            row["updated_at"] = self._tick()
+            return []
 
         if normalized.startswith("select id, title from episode where title ilike %s"):
             pattern = params[0]
@@ -287,6 +357,78 @@ class FakeDatabase:
                     claim.get("topic"),
                 )
                 for claim in limited
+            ]
+
+        if normalized.startswith(
+            "select id, episode_id, text, word_count from transcript where episode_id = %s"
+        ):
+            episode_id = params[0]
+            transcripts = [
+                row
+                for row in self.tables["transcript"]
+                if row.get("episode_id") == episode_id and row.get("text") not in (None, "")
+            ]
+            transcripts.sort(
+                key=lambda row: (
+                    row.get("word_count") is None,
+                    -(row.get("word_count") or 0),
+                    -row.get("id", 0),
+                )
+            )
+            if transcripts:
+                top = transcripts[0]
+                return [
+                    (
+                        top.get("id"),
+                        top.get("episode_id"),
+                        top.get("text"),
+                        top.get("word_count"),
+                    )
+                ]
+            return []
+
+        if normalized.startswith(
+            "select count(*) from transcript_chunk where transcript_id = %s"
+        ):
+            transcript_id = params[0]
+            count = sum(
+                1
+                for row in self.tables["transcript_chunk"]
+                if row.get("transcript_id") == transcript_id
+            )
+            return [(count,)]
+
+        if normalized.startswith("delete from transcript_chunk where transcript_id = %s"):
+            transcript_id = params[0]
+            self.tables["transcript_chunk"] = [
+                row
+                for row in self.tables["transcript_chunk"]
+                if row.get("transcript_id") != transcript_id
+            ]
+            return []
+
+        if normalized.startswith(
+            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk where transcript_id = %s"
+        ):
+            transcript_id = params[0]
+            rows = [
+                row
+                for row in self.tables["transcript_chunk"]
+                if row.get("transcript_id") == transcript_id
+            ]
+            rows.sort(key=lambda row: row.get("chunk_index", 0))
+            return [
+                (
+                    row.get("id"),
+                    row.get("transcript_id"),
+                    row.get("chunk_index"),
+                    row.get("token_start"),
+                    row.get("token_end"),
+                    row.get("token_count"),
+                    row.get("text"),
+                    row.get("key_points"),
+                )
+                for row in rows
             ]
 
         if normalized.startswith("select id from evidence_source where pubmed_id = %s"):
@@ -354,6 +496,76 @@ class FakeDatabase:
             row["journal"] = params[5]
             return []
 
+        if normalized.startswith(
+            "select id, job_type, status, payload, result, error, created_at, updated_at from job where id = %s"
+        ):
+            job_id = params[0]
+            row = self._find_one("job", job_id)
+            if not row:
+                return []
+            return [
+                (
+                    row.get("id"),
+                    row.get("job_type"),
+                    row.get("status"),
+                    row.get("payload"),
+                    row.get("result"),
+                    row.get("error"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                )
+            ]
+
+        if normalized.startswith(
+            "select id, job_type, status, payload, result, error, created_at, updated_at from job"
+        ):
+            rows = list(self.tables["job"])
+            param_index = 0
+            if "where status = %s" in normalized:
+                status = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("status") == status]
+            rows.sort(key=lambda row: row.get("id", 0), reverse="order by id desc" in normalized)
+            if "limit %s" in normalized:
+                limit = int(params[param_index])
+                rows = rows[:limit]
+            return [
+                (
+                    row.get("id"),
+                    row.get("job_type"),
+                    row.get("status"),
+                    row.get("payload"),
+                    row.get("result"),
+                    row.get("error"),
+                    row.get("created_at"),
+                    row.get("updated_at"),
+                )
+                for row in rows
+            ]
+
+        if normalized.startswith(
+            "update job set status = %s, error = %s, updated_at = now() where id = %s returning id"
+        ):
+            status, error, job_id = params
+            row = self._find_one("job", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["error"] = error
+            row["updated_at"] = self._tick()
+            return [(row.get("id"),)]
+
+        if normalized.startswith(
+            "update job set status = %s, updated_at = now() where id = %s"
+        ):
+            status, job_id = params
+            row = self._find_one("job", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["updated_at"] = self._tick()
+            return []
+
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
 
     # helpers -----------------------------------------------------------------
@@ -399,6 +611,17 @@ class FakeDatabase:
         if table == "claim_grade":
             processed.setdefault("rubric_version", "auto-v1")
 
+        if table == "job":
+            processed.setdefault("status", "queued")
+            processed.setdefault("payload", {})
+            processed.setdefault("result", None)
+            processed.setdefault("error", None)
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", processed.get("created_at"))
+
+        if table == "transcript_chunk":
+            processed.setdefault("key_points", None)
+
         self.tables[table].append(processed)
         return processed
 
@@ -430,6 +653,9 @@ class FakeDatabase:
                     claim.get("normalized_text"),
                     claim.get("topic"),
                     claim.get("domain"),
+                    claim.get("risk_level"),
+                    claim.get("start_ms"),
+                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
@@ -468,6 +694,9 @@ class FakeDatabase:
                     claim.get("raw_text"),
                     claim.get("normalized_text"),
                     claim.get("domain"),
+                    claim.get("risk_level"),
+                    claim.get("start_ms"),
+                    claim.get("end_ms"),
                     latest.get("grade") if latest else None,
                     latest.get("rationale") if latest else None,
                 )
