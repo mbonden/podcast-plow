@@ -2,11 +2,14 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from core.db import db_connection  # IMPORTANT: import from /app root
 
-from server.db.utils import db_conn
-from server.api.jobs import router as jobs_router
-
-from core.db import db_connection   # IMPORTANT: import from /app root
+try:  # pragma: no cover - exercised in Docker container
+    from server.api.jobs import router as jobs_router
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
+    if exc.name not in {"server", "server.api", "server.api.jobs"}:
+        raise
+    from api.jobs import router as jobs_router
 
 
 
