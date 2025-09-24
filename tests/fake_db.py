@@ -561,10 +561,35 @@ class FakeDatabase:
                 job_type = params[param_index]
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
-            rows.sort(key=lambda row: row.get("id", 0), reverse="order by id desc" in normalized)
+
+            if "order by priority desc" in normalized:
+                rows.sort(
+                    key=lambda row: (
+                        row.get("priority") in (None, ""),
+                        -int(row.get("priority") or 0),
+                        -row.get("id", 0),
+                    )
+                )
+            else:
+                rows.sort(
+                    key=lambda row: row.get("id", 0),
+                    reverse="order by id desc" in normalized,
+                )
+
+            limit: int | None = None
             if "limit %s" in normalized:
                 limit = int(params[param_index])
+                param_index += 1
+            offset = 0
+            if "offset %s" in normalized:
+                offset = int(params[param_index])
+                param_index += 1
+
+            if offset:
+                rows = rows[offset:]
+            if limit is not None:
                 rows = rows[:limit]
+
             return [
                 (
                     row.get("id"),

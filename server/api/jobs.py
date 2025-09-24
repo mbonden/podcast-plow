@@ -129,6 +129,19 @@ class JobCreateRequest(BaseModel):
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
             raise TypeError("priority must be an integer") from exc
 
+    @field_validator("dedupe", mode="before")
+    @classmethod
+    def _coerce_dedupe(cls, value: Any) -> bool:
+        if value in (None, ""):
+            return False
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"0", "false", "off", "no"}:
+                return False
+            if normalized in {"1", "true", "on", "yes"}:
+                return True
+        return bool(value)
+
     def iter_payloads(self) -> Iterable[dict[str, Any]]:
         payload = self.payload
         if isinstance(payload, list):
@@ -232,6 +245,11 @@ def list_jobs(
         le=500,
         description="Maximum number of jobs to return",
     ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Number of matching jobs to skip from the newest",
+    ),
 ) -> JobListResponse:
     """Return jobs ordered from newest to oldest with optional filtering."""
 
@@ -254,10 +272,13 @@ def list_jobs(
     sql = f"SELECT {JOB_RETURNING_COLUMNS} FROM job"
     if filters:
         sql += " WHERE " + " AND ".join(filters)
-    sql += " ORDER BY id DESC"
+    sql += " ORDER BY priority DESC, id DESC"
     if limit is not None:
         sql += " LIMIT %s"
         params.append(limit)
+    if offset:
+        sql += " OFFSET %s"
+        params.append(offset)
 
     with db_conn() as conn:
         with conn.cursor() as cur:

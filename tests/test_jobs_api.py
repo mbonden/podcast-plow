@@ -133,6 +133,37 @@ def test_enqueue_with_dedupe_returns_existing_job(
     assert len(fake_db.tables["job"]) == 1
 
 
+def test_enqueue_with_string_false_does_not_dedupe(
+    client: TestClient, fake_db: FakeDatabase
+) -> None:
+    first = client.post(
+        "/jobs",
+        json={
+            "job_type": "summarize_episode",
+            "payload": {"episode_id": 101},
+            "priority": 1,
+            "dedupe": True,
+        },
+    )
+    first_id = first.json()["jobs"][0]["id"]
+
+    second = client.post(
+        "/jobs",
+        json={
+            "job_type": "summarize_episode",
+            "payload": {"episode_id": 101},
+            "priority": 3,
+            "dedupe": "false",
+        },
+    )
+    assert second.status_code == 201
+    payload = second.json()
+
+    assert payload["count"] == 1
+    assert payload["jobs"][0]["id"] != first_id
+    assert len(fake_db.tables["job"]) == 2
+
+
 def test_get_job_returns_latest_status(client: TestClient) -> None:
     create_resp = client.post(
         "/jobs",
@@ -192,6 +223,53 @@ def test_list_jobs_supports_filters_and_limit(
     assert all(job["status"] == "done" for job in data["jobs"])
     assert data["jobs"][0]["id"] == second["id"]
     assert data["jobs"][0]["job_type"] == "grade"
+
+
+def test_list_jobs_orders_by_priority_then_id(client: TestClient) -> None:
+    low = client.post(
+        "/jobs",
+        json={"job_type": "summarize", "payload": {"episode_id": 1}, "priority": 1},
+    ).json()["jobs"][0]
+    mid = client.post(
+        "/jobs",
+        json={"job_type": "summarize", "payload": {"episode_id": 2}, "priority": 5},
+    ).json()["jobs"][0]
+    high = client.post(
+        "/jobs",
+        json={"job_type": "summarize", "payload": {"episode_id": 3}, "priority": 9},
+    ).json()["jobs"][0]
+    later_mid = client.post(
+        "/jobs",
+        json={"job_type": "summarize", "payload": {"episode_id": 4}, "priority": 5},
+    ).json()["jobs"][0]
+
+    listing = client.get("/jobs?limit=4").json()
+    ordered_ids = [job["id"] for job in listing["jobs"]]
+
+    assert ordered_ids == [high["id"], later_mid["id"], mid["id"], low["id"]]
+
+
+def test_list_jobs_supports_offset(client: TestClient) -> None:
+    first = client.post(
+        "/jobs",
+        json={"job_type": "alpha", "payload": {"value": 1}, "priority": 10},
+    ).json()["jobs"][0]
+    second = client.post(
+        "/jobs",
+        json={"job_type": "alpha", "payload": {"value": 2}, "priority": 8},
+    ).json()["jobs"][0]
+    third = client.post(
+        "/jobs",
+        json={"job_type": "alpha", "payload": {"value": 3}, "priority": 6},
+    ).json()["jobs"][0]
+
+    response = client.get("/jobs?limit=1&offset=1")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["count"] == 1
+    assert data["jobs"][0]["id"] == second["id"]
+    assert data["jobs"][0]["priority"] == second["priority"]
 
 
 def test_invalid_status_filter_returns_error(client: TestClient) -> None:
