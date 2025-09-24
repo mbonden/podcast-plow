@@ -21,6 +21,7 @@ if str(TESTS_ROOT) not in sys.path:
 
 import server.app as app_module
 import server.api.jobs as jobs_module
+from server.services import jobs as jobs_service
 from fake_db import FakeConnection, FakeDatabase
 
 
@@ -64,7 +65,7 @@ def test_enqueue_single_job_with_priority(
     assert job["payload"] == {"episode_id": 42}
     assert job["priority"] == 7
 
-    stored_job = fake_db.tables["job"][0]
+    stored_job = fake_db.tables["job_queue"][0]
     assert stored_job["job_type"] == "summarize_episode"
     assert stored_job["priority"] == 7
 
@@ -89,9 +90,9 @@ def test_enqueue_multiple_jobs(client: TestClient, fake_db: FakeDatabase) -> Non
     assert all(job["status"] == "queued" for job in payload["jobs"])
     assert {job["payload"]["episode_id"] for job in payload["jobs"]} == {1, 2}
 
-    stored_ids = {row["payload"].get("episode_id") for row in fake_db.tables["job"]}
+    stored_ids = {row["payload"].get("episode_id") for row in fake_db.tables["job_queue"]}
     assert stored_ids == {1, 2}
-    assert all(row["priority"] == 0 for row in fake_db.tables["job"])
+    assert all(row["priority"] == 0 for row in fake_db.tables["job_queue"])
 
 
 def test_enqueue_with_dedupe_returns_existing_job(
@@ -109,11 +110,8 @@ def test_enqueue_with_dedupe_returns_existing_job(
     first_id = first.json()["jobs"][0]["id"]
 
     with app_module.db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE job SET status = %s, updated_at = now() WHERE id = %s",
-            ("running", first_id),
-        )
+        dequeued = jobs_service.dequeue_job(conn, job_types=["summarize_episode"])
+        assert dequeued is not None
 
     second = client.post(
         "/jobs",
@@ -130,7 +128,7 @@ def test_enqueue_with_dedupe_returns_existing_job(
     assert second_body["count"] == 1
     assert second_body["jobs"][0]["id"] == first_id
     assert second_body["jobs"][0]["status"] == "running"
-    assert len(fake_db.tables["job"]) == 1
+    assert len(fake_db.tables["job_queue"]) == 1
 
 
 def test_enqueue_with_string_false_does_not_dedupe(
@@ -161,7 +159,7 @@ def test_enqueue_with_string_false_does_not_dedupe(
 
     assert payload["count"] == 1
     assert payload["jobs"][0]["id"] != first_id
-    assert len(fake_db.tables["job"]) == 2
+    assert len(fake_db.tables["job_queue"]) == 2
 
 
 def test_get_job_returns_latest_status(client: TestClient) -> None:
@@ -172,11 +170,8 @@ def test_get_job_returns_latest_status(client: TestClient) -> None:
     job_id = create_resp.json()["jobs"][0]["id"]
 
     with app_module.db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE job SET status = %s, error = %s, updated_at = now() WHERE id = %s RETURNING id",
-            ("running", None, job_id),
-        )
+        dequeued = jobs_service.dequeue_job(conn, job_types=["evidence"])
+        assert dequeued is not None
 
     detail = client.get(f"/jobs/{job_id}")
     assert detail.status_code == 200
@@ -186,11 +181,7 @@ def test_get_job_returns_latest_status(client: TestClient) -> None:
     assert data["payload"] == {"claim_id": 9}
 
     with app_module.db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE job SET status = %s, updated_at = now() WHERE id = %s",
-            ("done", job_id),
-        )
+        jobs_service.mark_job_done(conn, job_id)
 
     done_detail = client.get(f"/jobs/{job_id}")
     assert done_detail.status_code == 200
@@ -210,11 +201,7 @@ def test_list_jobs_supports_filters_and_limit(
     ).json()["jobs"][0]
 
     with app_module.db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE job SET status = %s, updated_at = now() WHERE id = %s",
-            ("done", second["id"]),
-        )
+        jobs_service.mark_job_done(conn, second["id"])
 
     list_resp = client.get("/jobs?status=done&type=grade&limit=1")
     assert list_resp.status_code == 200

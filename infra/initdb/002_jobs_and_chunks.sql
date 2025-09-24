@@ -3,19 +3,23 @@
 -- Job queue for background work
 CREATE TABLE IF NOT EXISTS job_queue (
   id SERIAL PRIMARY KEY,
-  job_type TEXT,
-  payload_json JSONB,
-  status TEXT,
-  priority INT DEFAULT 5,
-  attempts INT DEFAULT 0,
-  error TEXT,
-  created_at TIMESTAMPTZ DEFAULT now(),
+  job_type TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'queued',
+  priority INT NOT NULL DEFAULT 0,
+  run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  attempts INT NOT NULL DEFAULT 0,
+  max_attempts INT NOT NULL DEFAULT 3,
+  last_error TEXT,
+  result JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   started_at TIMESTAMPTZ,
-  finished_at TIMESTAMPTZ
+  finished_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_job_queue_status_priority_created_at
-  ON job_queue (status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_job_queue_status_priority_run_at
+  ON job_queue (status, priority, run_at);
 
 -- Transcript chunks allow storing smaller units with embeddings
 CREATE TABLE IF NOT EXISTS transcript_chunk (
