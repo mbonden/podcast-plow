@@ -1,5 +1,4 @@
 """Administrative endpoints for managing background jobs."""
-
 from __future__ import annotations
 
 from copy import deepcopy
@@ -9,7 +8,12 @@ from typing import Any, Iterable, Sequence
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from server.db.utils import db_conn
+try:  # pragma: no cover - executed in Docker container
+    from server.db.utils import db_conn
+except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
+    if exc.name not in {"server", "server.db", "server.db.utils"}:
+        raise
+    from db.utils import db_conn
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
