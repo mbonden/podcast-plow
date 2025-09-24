@@ -8,12 +8,23 @@ in-memory substitute that understands the handful of SQL statements used in
 the API handlers and seed data.
 """
 
+import datetime as dt
 from dataclasses import dataclass
 import re
 from typing import Any, Dict, List, Sequence, Tuple
 
 
 NOW_SENTINEL = object()
+
+
+def _as_datetime(value: Any) -> dt.datetime:
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt.timezone.utc)
+        return value
+    if isinstance(value, (int, float)):
+        return dt.datetime.fromtimestamp(float(value), tz=dt.timezone.utc)
+    return dt.datetime.now(tz=dt.timezone.utc)
 
 
 def _normalize_sql(sql: str) -> str:
@@ -200,7 +211,9 @@ class FakeDatabase:
             "claim_grade": [],
             "transcript": [],
             "transcript_chunk": [],
+            "job_queue": [],
             "job": [],
+            "job_queue": [],
         }
         self._auto_ids: Dict[str, int] = {
             "podcast": 1,
@@ -211,7 +224,9 @@ class FakeDatabase:
             "claim_grade": 1,
             "transcript": 1,
             "transcript_chunk": 1,
+            "job_queue": 1,
             "job": 1,
+            "job_queue": 1,
         }
         self._insert_order = 0
         self._clock = 0
@@ -251,6 +266,19 @@ class FakeDatabase:
             if summaries:
                 top = summaries[0]
                 return [(top.get("tl_dr"), top.get("narrative"))]
+            return []
+
+        if normalized.startswith("delete from episode_summary where episode_id = %s and created_by in (%s, %s)"):
+            episode_id, creator_a, creator_b = params
+            allowed = {creator_a, creator_b}
+            self.tables["episode_summary"] = [
+                row
+                for row in self.tables["episode_summary"]
+                if not (
+                    row.get("episode_id") == episode_id
+                    and row.get("created_by") in allowed
+                )
+            ]
             return []
 
         if normalized.startswith("with latest_grade as") and "where c.episode_id = %s" in normalized:
@@ -407,6 +435,14 @@ class FakeDatabase:
             ]
             return []
 
+        if normalized.startswith("update transcript_chunk set key_points = %s where id = %s"):
+            key_points, chunk_id = params
+            row = self._find_one("transcript_chunk", chunk_id)
+            if not row:
+                return []
+            row["key_points"] = key_points
+            return []
+
         if normalized.startswith(
             "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk where transcript_id = %s"
         ):
@@ -497,7 +533,9 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
+
             "select id, job_type, status, payload, result, error, created_at, updated_at, priority from job where id = %s"
+
         ):
             job_id = params[0]
             row = self._find_one("job", job_id)
@@ -606,6 +644,93 @@ class FakeDatabase:
             ]
 
         if normalized.startswith(
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
+        ):
+            rows = list(self.tables["job_queue"])
+            param_index = 0
+            if "where status = %s and run_at <= now()" in normalized:
+                status = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("status") == status]
+                rows.sort(
+                    key=lambda row: (
+                        -int(row.get("priority", 0) or 0),
+                        row.get("run_at") or 0,
+                        row.get("id", 0),
+                    )
+                )
+                if not rows:
+                    return []
+                top = rows[0]
+                return [
+                    (
+                        top.get("id"),
+                        top.get("job_type"),
+                        top.get("payload"),
+                        top.get("status"),
+                        top.get("priority"),
+                        top.get("run_at"),
+                        top.get("attempts"),
+                        top.get("max_attempts"),
+                        top.get("last_error"),
+                    )
+                ]
+
+            if "where id = %s" in normalized:
+                job_id = params[param_index]
+                row = self._find_one("job_queue", job_id)
+                if not row:
+                    return []
+                return [
+                    (
+                        row.get("id"),
+                        row.get("job_type"),
+                        row.get("payload"),
+                        row.get("status"),
+                        row.get("priority"),
+                        row.get("run_at"),
+                        row.get("attempts"),
+                        row.get("max_attempts"),
+                        row.get("last_error"),
+                    )
+                ]
+
+            if "where status = %s" in normalized:
+                status = params[param_index]
+                param_index += 1
+                rows = [row for row in rows if row.get("status") == status]
+
+            if "order by priority desc, run_at, id" in normalized:
+                rows.sort(
+                    key=lambda row: (
+                        -int(row.get("priority", 0) or 0),
+                        row.get("run_at") or 0,
+                        row.get("id", 0),
+                    )
+                )
+            else:
+                rows.sort(key=lambda row: row.get("id", 0), reverse=True)
+
+            if "limit %s" in normalized:
+                limit = int(params[param_index])
+                rows = rows[:limit]
+
+            return [
+                (
+                    row.get("id"),
+                    row.get("job_type"),
+                    row.get("payload"),
+                    row.get("status"),
+                    row.get("priority"),
+                    row.get("run_at"),
+                    row.get("attempts"),
+                    row.get("max_attempts"),
+                    row.get("last_error"),
+                )
+                for row in rows
+            ]
+
+        if normalized.startswith(
             "update job set status = %s, error = %s, updated_at = now() where id = %s returning id"
         ):
             status, error, job_id = params
@@ -625,6 +750,61 @@ class FakeDatabase:
             if not row:
                 return []
             row["status"] = status
+            row["updated_at"] = self._tick()
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, attempts = attempts + 1, started_at = now(), updated_at = now() where id = %s"
+        ):
+            status, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["attempts"] = int(row.get("attempts", 0) or 0) + 1
+
+            row["started_at"] = self._tick()
+            row["updated_at"] = self._tick()
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, finished_at = now(), last_error = null, updated_at = now() where id = %s"
+        ):
+            status, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["finished_at"] = self._tick()
+            row["last_error"] = None
+            row["updated_at"] = self._tick()
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, finished_at = now(), last_error = %s, updated_at = now() where id = %s"
+        ):
+            status, error, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["finished_at"] = self._tick()
+            row["last_error"] = error
+            row["updated_at"] = self._tick()
+            return []
+
+        if normalized.startswith(
+            "update job_queue set status = %s, run_at = %s, last_error = %s, started_at = null, finished_at = null, updated_at = now() where id = %s"
+        ):
+            status, run_at, error, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            row["status"] = status
+            row["run_at"] = run_at
+            row["last_error"] = error
+            row["started_at"] = None
+            row["finished_at"] = None
             row["updated_at"] = self._tick()
             return []
 
@@ -671,7 +851,20 @@ class FakeDatabase:
             processed.setdefault("created_at", self._tick())
 
         if table == "claim_grade":
-            processed.setdefault("rubric_version", "auto-v1")
+            processed.setdefault("rubric_version", "v1")
+            processed.setdefault("graded_by", "auto-grader")
+
+        if table == "job_queue":
+            processed.setdefault("status", "queued")
+            processed["priority"] = int(processed.get("priority", 0) or 0)
+            processed["attempts"] = int(processed.get("attempts", 0) or 0)
+            processed["max_attempts"] = int(processed.get("max_attempts", 3) or 3)
+            processed["run_at"] = _as_datetime(processed.get("run_at"))
+            processed.setdefault("last_error", None)
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", processed.get("created_at"))
+            processed.setdefault("started_at", None)
+            processed.setdefault("finished_at", None)
 
         if table == "job":
             processed.setdefault("status", "queued")
@@ -681,6 +874,17 @@ class FakeDatabase:
             processed.setdefault("created_at", self._tick())
             processed.setdefault("updated_at", processed.get("created_at"))
             processed.setdefault("priority", 0)
+
+        if table == "job_queue":
+            processed.setdefault("status", "queued")
+            processed.setdefault("payload", {})
+            processed.setdefault("priority", 0)
+            processed.setdefault("run_at", self._tick())
+            processed.setdefault("attempts", 0)
+            processed.setdefault("max_attempts", 3)
+            processed.setdefault("last_error", None)
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("updated_at", processed.get("created_at"))
 
         if table == "transcript_chunk":
             processed.setdefault("key_points", None)

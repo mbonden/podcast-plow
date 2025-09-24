@@ -36,3 +36,11 @@ Refuting evidence reduces confidence after the initial grade is calculated:
 
 The stored rationale strings explain the supporting and refuting counts, and add
 "Conflicting evidence reduced confidence." whenever a downgrade occurs.
+
+## Validation
+
+Unit tests in `tests/test_auto_grade.py` lock the grading behaviour in place:
+
+* `compute_grade` scenarios check each bucket, including conflict handling.
+* `AutoGradeService` is exercised against the fake database to ensure re-grading
+  appends a fresh `claim_grade` row with the current `rubric_version`.

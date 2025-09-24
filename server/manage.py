@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Iterable, List, Optional
 
 import typer
 
@@ -13,11 +13,19 @@ from ingest import summaries as summaries_module
 from ingest import transcripts as transcripts_module
 from services import claims as claims_service
 from services import jobs as jobs_service
+from services import grader as grader_service
 from services import summarize as summarize_service
 
+logger = logging.getLogger(__name__)
+
 app = typer.Typer(help="Podcast ingestion and summarisation utilities")
+jobs_app = typer.Typer(help="Background job processing commands")
 enqueue_app = typer.Typer(help="Job queue helpers")
+jobs_app.add_typer(enqueue_app, name="enqueue")
+app.add_typer(jobs_app, name="jobs")
 app.add_typer(enqueue_app, name="enqueue")
+
+logger = logging.getLogger(__name__)
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -25,18 +33,47 @@ def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(level=level, format="%(levelname)s %(message)s")
 
 
-def _parse_episode_ids(raw: str) -> List[int]:
+def _parse_id_list(raw: str, *, label: str) -> List[int]:
     parts = [value.strip() for value in raw.split(",") if value.strip()]
     if not parts:
-        raise typer.BadParameter("Provide at least one episode id")
+        raise typer.BadParameter(f"Provide at least one {label}")
 
     episode_ids: List[int] = []
     for part in parts:
         try:
             episode_ids.append(int(part))
         except ValueError as exc:  # pragma: no cover - defensive guard
-            raise typer.BadParameter(f"Invalid episode id '{part}'") from exc
+            raise typer.BadParameter(f"Invalid {label} '{part}'") from exc
     return episode_ids
+
+
+def _parse_episode_ids(raw: str) -> List[int]:
+    return _parse_id_list(raw, label="episode id")
+
+
+def _parse_claim_ids(raw: str) -> List[int]:
+    return _parse_id_list(raw, label="claim id")
+
+
+def _coerce_id_sequence(value: Any, *, field_name: str) -> List[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        result: List[int] = []
+        for item in value:
+            if item in (None, ""):
+                continue
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+                raise ValueError(f"{field_name} must only contain integers") from exc
+        return result or None
+    try:
+        return [int(value)]
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
+        raise ValueError(f"{field_name} must be an integer or list of integers") from exc
 
 
 def _process_job(conn, job: jobs_service.Job) -> None:
@@ -62,6 +99,13 @@ def _process_job(conn, job: jobs_service.Job) -> None:
             raise ValueError(f"Invalid episode_id value {episode_id!r}") from exc
         refresh_flag = bool(job.payload.get("refresh", False))
         claims_service.extract_episode_claims(conn, episode_int, refresh=refresh_flag)
+        return
+
+    if job.job_type == "auto_grade":
+        claim_ids = _coerce_id_sequence(job.payload.get("claim_ids"), field_name="claim_ids")
+        episode_ids = _coerce_id_sequence(job.payload.get("episode_ids"), field_name="episode_ids")
+        grader = grader_service.AutoGradeService(conn)
+        grader.grade_claims(claim_ids=claim_ids, episode_ids=episode_ids)
         return
 
     raise ValueError(f"Unsupported job type: {job.job_type}")
@@ -103,6 +147,80 @@ def enqueue_extract_claims(
     typer.echo(f"Enqueued {len(ids)} claim extraction job(s).")
 
 
+@enqueue_app.command("auto-grade")
+def enqueue_auto_grade(
+    claim_ids: Optional[str] = typer.Option(
+        None,
+        "--claim-ids",
+        help="Comma separated list of claim ids to re-grade",
+    ),
+    episode_ids: Optional[str] = typer.Option(
+        None,
+        "--episode-ids",
+        help="Comma separated list of episode ids whose claims should be graded",
+    ),
+    priority: int = typer.Option(
+        0,
+        "--priority",
+        "-p",
+        help="Higher numbers run before lower priority",
+    ),
+) -> None:
+    claim_list = _parse_claim_ids(claim_ids) if claim_ids is not None else None
+    episode_list = _parse_episode_ids(episode_ids) if episode_ids is not None else None
+    if not claim_list and not episode_list:
+        raise typer.BadParameter("Provide --claim-ids or --episode-ids")
+
+    payload: dict[str, Any] = {}
+    if claim_list:
+        payload["claim_ids"] = claim_list
+    if episode_list:
+        payload["episode_ids"] = episode_list
+
+    with db_conn() as conn:
+        job = jobs_service.enqueue_job(
+            conn,
+            job_type="auto_grade",
+            payload=payload,
+            priority=priority,
+        )
+    typer.echo(f"Enqueued auto-grade job {job.id} targeting linked claims.")
+
+
+@jobs_app.command("list")
+def list_jobs(
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        "-s",
+        help="Only show jobs with the provided status (queued, running, failed, done)",
+    ),
+    limit: Optional[int] = typer.Option(
+        None,
+        "--limit",
+        "-l",
+        min=1,
+        help="Restrict the number of jobs displayed",
+    ),
+) -> None:
+    normalized_status = status.strip().lower() if status else None
+    if normalized_status not in {None, "queued", "running", "failed", "done"}:
+        raise typer.BadParameter("Status must be one of queued, running, failed, or done")
+
+    with db_conn() as conn:
+        jobs = jobs_service.list_jobs(conn, status=normalized_status, limit=limit)
+
+    if not jobs:
+        typer.echo("No jobs match the provided filters.")
+        return
+
+    for job in jobs:
+        run_at = job.run_at.isoformat() if job.run_at else "?"
+        typer.echo(
+            f"[{job.id}] {job.job_type} ({job.status}) priority={job.priority} run_at={run_at}"
+        )
+
+
 @app.callback()
 def main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging")) -> None:
     _configure_logging(verbose)
@@ -118,22 +236,51 @@ def discover(
     typer.echo(f"Inserted {inserted} new episodes from feeds in {feeds}.")
 
 
-@app.command()
+@jobs_app.command("work")
+
 def work(
-    once: bool = typer.Option(False, "--once", help="Process at most one job and then exit"),
+    once: bool = typer.Option(False, "--once", help="Process a single job and then exit"),
     loop: bool = typer.Option(False, "--loop", help="Continuously poll for new jobs"),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds to wait between polls when idle"),
+    job_type: Optional[List[str]] = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="Only process jobs matching the provided type. Use multiple --type options to allow more than one type.",
+    ),
+    max_jobs: Optional[int] = typer.Option(
+        None,
+        "--max",
+        min=1,
+        help="Maximum number of jobs to process before exiting.",
+    ),
 ) -> None:
     if once and loop:
         raise typer.BadParameter("Choose either --once or --loop, not both")
+    if not once and not loop:
+        raise typer.BadParameter("Specify either --once or --loop")
 
-    should_loop = loop or not once
     poll_interval = max(poll_interval, 0.1)
+    should_loop = loop
+
+    remaining: Optional[int] = max_jobs
+    if once:
+        remaining = 1 if remaining is None else min(remaining, 1)
+
+    job_types: List[str] = []
+    if job_type:
+        for entry in job_type:
+            cleaned = (entry or "").strip()
+            if cleaned:
+                job_types.append(cleaned)
 
     while True:
+        if remaining is not None and remaining <= 0:
+            break
+
         job: jobs_service.Job | None = None
         with db_conn() as conn:
-            job = jobs_service.dequeue_job(conn)
+            job = jobs_service.dequeue_job(conn, job_types=job_types or None)
             if job is None:
                 # Close connection before potentially sleeping
                 pass
@@ -155,8 +302,14 @@ def work(
             typer.echo("No queued jobs available.")
             break
 
+        if remaining is not None:
+            remaining -= 1
         if not should_loop:
             break
+
+
+# Backwards compatibility: allow the legacy ``python manage.py work`` invocation.
+app.command("work")(work)
 
 
 @app.command("fetch-transcripts")
