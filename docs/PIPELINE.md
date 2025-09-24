@@ -66,3 +66,16 @@ Running the jobs in order produces:
 Each stage is safe to re-run. Extraction fully replaces prior claim rows for an
 episode, the evidence fetcher upserts by PubMed ID/DOI, and the grader appends a
 fresh history entry for every invocation.
+
+## Test coverage checkpoints
+
+The automated test suite guards the pipeline end-to-end:
+
+* `tests/test_claim_extraction.py` and `tests/test_claim_service.py` confirm each
+  fixture transcript yields multiple stored claims.
+* `tests/test_evidence_service.py` verifies mocked evidence fetches upsert
+  `evidence_source` rows and link them via `claim_evidence`.
+* `tests/test_auto_grade.py` ensures `AutoGradeService` appends a new
+  versioned `claim_grade` row every time the grader runs.
+* `tests/test_api_privacy_and_claims.py` asserts the public API never exposes
+  raw transcript text.

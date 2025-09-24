@@ -9,6 +9,8 @@ import pytest
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from server.core.grading import ClaimEvidence, EvidenceItem, compute_grade
+from server.services.grader import AUTO_GRADED_BY, RUBRIC_VERSION, AutoGradeService
+from tests.fake_db import FakeConnection, FakeDatabase
 from worker.auto_grade import AutoGrader
 
 
@@ -107,3 +109,59 @@ def test_regrading_creates_new_row():
     assert store.rows[0] == first_snapshot[0]
     assert store.rows[1]["claim_id"] == 42
     assert store.rows[1]["grade"] == store.rows[0]["grade"]
+
+
+def test_auto_grade_service_appends_versioned_history() -> None:
+    database = FakeDatabase()
+    conn = FakeConnection(database)
+
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO claim (id, episode_id, raw_text, normalized_text) VALUES (%s, %s, %s, %s)",
+        (1, 1, "Ketones support focus", "ketones improve cognition"),
+    )
+    cur.execute(
+        """
+        INSERT INTO evidence_source (title, year, doi, pubmed_id, url, type, journal)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            "Randomized trial of ketones",
+            2022,
+            None,
+            "PM555",
+            "https://example.org/pm555",
+            "randomized controlled trial",
+            "Journal of Metabolic Health",
+        ),
+    )
+    evidence_id = database.tables["evidence_source"][0]["id"]
+    cur.execute(
+        "INSERT INTO claim_evidence (claim_id, evidence_id, stance, notes) VALUES (%s, %s, %s, %s)",
+        (1, evidence_id, "supports", "manual link"),
+    )
+
+    service = AutoGradeService(conn)
+
+    first_pass = service.grade_claims(claim_ids=[1])
+    assert len(first_pass) == 1
+    assert first_pass[0]["claim_id"] == 1
+    assert first_pass[0]["grade"] == "moderate"
+
+    grades = database.tables["claim_grade"]
+    assert len(grades) == 1
+    first_entry = grades[0]
+    assert first_entry["claim_id"] == 1
+    assert first_entry["rubric_version"] == RUBRIC_VERSION
+    assert first_entry["graded_by"] == AUTO_GRADED_BY
+
+    second_pass = service.grade_claims(claim_ids=[1])
+    assert len(second_pass) == 1
+    assert second_pass[0]["claim_id"] == 1
+    assert second_pass[0]["grade"] == first_pass[0]["grade"]
+    assert len(grades) == 2
+    second_entry = grades[1]
+    assert second_entry["claim_id"] == 1
+    assert second_entry["rubric_version"] == RUBRIC_VERSION
+    assert second_entry["graded_by"] == AUTO_GRADED_BY
+    assert second_entry["created_at"] > first_entry["created_at"]
