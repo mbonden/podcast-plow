@@ -137,6 +137,7 @@ CREATE TABLE job (
   id SERIAL PRIMARY KEY,
   job_type TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'queued',
+  priority INT NOT NULL DEFAULT 0,
   payload JSONB NOT NULL,
   result JSONB,
   error TEXT,

@@ -18,9 +18,10 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 JOB_RETURNING_COLUMNS = (
-    "id, job_type, status, payload, result, error, created_at, updated_at"
+    "id, job_type, status, payload, result, error, created_at, updated_at, priority"
 )
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
+ACTIVE_STATUSES = {"queued", "running"}
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:
@@ -56,6 +57,7 @@ class JobResponse(BaseModel):
     error: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    priority: int = 0
 
     @field_validator("status", mode="before")
     @classmethod
@@ -71,6 +73,16 @@ class JobResponse(BaseModel):
             raise ValueError("job_type cannot be null")
         return str(value)
 
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _normalize_priority(cls, value: Any) -> int:
+        if value in (None, ""):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise TypeError("priority must be an integer") from exc
+
 
 class JobListResponse(BaseModel):
     jobs: list[JobResponse]
@@ -80,6 +92,8 @@ class JobListResponse(BaseModel):
 class JobCreateRequest(BaseModel):
     job_type: str = Field(..., min_length=1)
     payload: dict[str, Any] | list[dict[str, Any]]
+    priority: int = 0
+    dedupe: bool | str | None = False
 
     @field_validator("job_type", mode="before")
     @classmethod
@@ -105,6 +119,16 @@ class JobCreateRequest(BaseModel):
             return value
         raise TypeError("payload must be an object or list of objects")
 
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _coerce_priority(cls, value: Any) -> int:
+        if value in (None, ""):
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise TypeError("priority must be an integer") from exc
+
     def iter_payloads(self) -> Iterable[dict[str, Any]]:
         payload = self.payload
         if isinstance(payload, list):
@@ -129,6 +153,7 @@ def _row_to_job(row: Sequence[Any] | None) -> JobResponse:
             "error",
             "created_at",
             "updated_at",
+            "priority",
         )
         data = dict(zip(keys, row, strict=False))
     return JobResponse(
@@ -140,6 +165,7 @@ def _row_to_job(row: Sequence[Any] | None) -> JobResponse:
         error=data.get("error"),
         created_at=_normalize_timestamp(data.get("created_at")),
         updated_at=_normalize_timestamp(data.get("updated_at")),
+        priority=int(data.get("priority") or 0),
     )
 
 
@@ -149,19 +175,43 @@ def enqueue_jobs(request: JobCreateRequest) -> JobListResponse:
 
     payloads = list(request.iter_payloads())
     jobs: list[JobResponse] = []
+    seen_job_ids: set[int] = set()
+    dedupe_enabled = bool(request.dedupe)
     with db_conn() as conn:
         with conn.cursor() as cur:
             for payload in payloads:
+                if dedupe_enabled:
+                    cur.execute(
+                        f"""
+                        SELECT {JOB_RETURNING_COLUMNS}
+                        FROM job
+                        WHERE job_type = %s AND payload = %s
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (request.job_type, payload),
+                    )
+                    existing = cur.fetchone()
+                    if existing:
+                        job = _row_to_job(existing)
+                        if job.status in ACTIVE_STATUSES:
+                            if job.id not in seen_job_ids:
+                                jobs.append(job)
+                                seen_job_ids.add(job.id)
+                            continue
                 cur.execute(
                     f"""
-                    INSERT INTO job (job_type, status, payload)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO job (job_type, status, payload, priority)
+                    VALUES (%s, %s, %s, %s)
                     RETURNING {JOB_RETURNING_COLUMNS}
                     """,
-                    (request.job_type, "queued", payload),
+                    (request.job_type, "queued", payload, request.priority),
                 )
                 row = cur.fetchone()
-                jobs.append(_row_to_job(row))
+                job = _row_to_job(row)
+                if job.id not in seen_job_ids:
+                    jobs.append(job)
+                    seen_job_ids.add(job.id)
     return JobListResponse(jobs=jobs, count=len(jobs))
 
 
@@ -170,6 +220,11 @@ def list_jobs(
     status: str | None = Query(
         None,
         description="Filter jobs by status (queued, running, failed, done)",
+    ),
+    job_type: str | None = Query(
+        None,
+        alias="type",
+        description="Filter jobs by job type",
     ),
     limit: int | None = Query(
         50,
@@ -188,6 +243,13 @@ def list_jobs(
             raise HTTPException(status_code=400, detail="invalid status filter")
         filters.append("status = %s")
         params.append(normalized_status)
+
+    if job_type is not None:
+        normalized_type = job_type.strip()
+        if not normalized_type:
+            raise HTTPException(status_code=400, detail="invalid type filter")
+        filters.append("job_type = %s")
+        params.append(normalized_type)
 
     sql = f"SELECT {JOB_RETURNING_COLUMNS} FROM job"
     if filters:
