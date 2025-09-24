@@ -3,10 +3,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Iterable
+
+from typing import Any, Sequence
+
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from server.services import jobs as jobs_service
 
@@ -16,6 +18,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
     if exc.name not in {"server", "server.db", "server.db.utils"}:
         raise
     from db.utils import db_conn
+
+try:  # pragma: no cover - executed in Docker container
+    from server.services import jobs as jobs_service
+except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
+    if exc.name not in {"server", "server.services", "server.services.jobs"}:
+        raise
+    from services import jobs as jobs_service
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
@@ -87,11 +96,22 @@ class JobListResponse(BaseModel):
     count: int
 
 
-class JobCreateRequest(BaseModel):
-    job_type: str = Field(..., min_length=1)
-    payload: dict[str, Any] | list[dict[str, Any]]
-    priority: int = 0
-    dedupe: bool | str | None = False
+class JobSpec(BaseModel):
+    """Definition of a job to enqueue."""
+
+    job_type: str = Field(..., alias="type", min_length=1)
+    payload: dict[str, Any]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_aliases(cls, value: Any):
+        if isinstance(value, dict) and "job_type" in value and "type" not in value:
+            updated = dict(value)
+            updated["type"] = updated.pop("job_type")
+            return updated
+        return value
 
     @field_validator("job_type", mode="before")
     @classmethod
@@ -105,17 +125,61 @@ class JobCreateRequest(BaseModel):
 
     @field_validator("payload")
     @classmethod
-    def _ensure_payload(cls, value: Any) -> dict[str, Any] | list[dict[str, Any]]:
+    def _ensure_payload(cls, value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
-        if isinstance(value, list):
-            if not value:
-                raise ValueError("payload list cannot be empty")
-            for item in value:
-                if not isinstance(item, dict):
-                    raise TypeError("payload list entries must be objects")
+        raise TypeError("payload must be an object")
+
+
+class JobCreateRequest(BaseModel):
+    jobs: list[JobSpec]
+    priority: int = 0
+    dedupe: bool | str | None = False
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_format(cls, value: Any):
+        if not isinstance(value, dict):
             return value
-        raise TypeError("payload must be an object or list of objects")
+
+        if "jobs" in value:
+            jobs = value["jobs"]
+        elif "job_type" in value and "payload" in value:
+            payload = value.get("payload")
+            job_type = value.get("job_type")
+            if isinstance(payload, list):
+                if not payload:
+                    raise ValueError("payload list cannot be empty")
+                jobs = [{"type": job_type, "payload": item} for item in payload]
+            else:
+                jobs = [{"type": job_type, "payload": payload}]
+            value = {**value, "jobs": jobs}
+        else:
+            jobs = value.get("jobs")
+
+        if jobs is None:
+            return value
+
+        normalized_jobs: list[Any] = []
+        for job in jobs:
+            if isinstance(job, dict) and "job_type" in job and "type" not in job:
+                job = {**job, "type": job.pop("job_type")}
+            normalized_jobs.append(job)
+
+        updated = dict(value)
+        updated["jobs"] = normalized_jobs
+        updated.pop("job_type", None)
+        updated.pop("payload", None)
+        return updated
+
+    @field_validator("jobs")
+    @classmethod
+    def _ensure_jobs(cls, value: list[JobSpec]) -> list[JobSpec]:
+        if not value:
+            raise ValueError("jobs must contain at least one job")
+        return value
 
     @field_validator("priority", mode="before")
     @classmethod
@@ -140,13 +204,17 @@ class JobCreateRequest(BaseModel):
                 return True
         return bool(value)
 
-    def iter_payloads(self) -> Iterable[dict[str, Any]]:
-        payload = self.payload
-        if isinstance(payload, list):
-            for item in payload:
-                yield deepcopy(item)
-        else:
-            yield deepcopy(payload)
+
+class RejectedJob(BaseModel):
+    job_type: str
+    payload: Any
+    reason: str
+
+
+class JobEnqueueResponse(BaseModel):
+    accepted: list[JobResponse]
+    reused: list[JobResponse]
+    rejected: list[RejectedJob]
 
 
 def _job_to_response(job: jobs_service.Job) -> JobResponse:
@@ -163,37 +231,78 @@ def _job_to_response(job: jobs_service.Job) -> JobResponse:
     )
 
 
-@router.post("", response_model=JobListResponse, status_code=201)
-def enqueue_jobs(request: JobCreateRequest) -> JobListResponse:
-    """Insert new jobs into the queue with an initial queued status."""
+@router.post("", response_model=JobEnqueueResponse, status_code=201)
+def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
+    """Insert new jobs into the queue with optional deduplication."""
 
-    payloads = list(request.iter_payloads())
-    jobs: list[JobResponse] = []
-    seen_job_ids: set[int] = set()
+    accepted: list[JobResponse] = []
+    reused: list[JobResponse] = []
+    rejected: list[RejectedJob] = []
     dedupe_enabled = bool(request.dedupe)
+    fingerprint_cache: dict[str, JobResponse] = {}
+    fingerprint_misses: set[str] = set()
+
     with db_conn() as conn:
-        for payload in payloads:
-            if dedupe_enabled:
-                existing = jobs_service.find_job_by_payload(
-                    conn,
-                    job_type=request.job_type,
-                    payload=payload,
+
+        with conn.cursor() as cur:
+            for job_spec in request.jobs:
+                payload = deepcopy(job_spec.payload)
+                fingerprint = jobs_service.compute_job_fingerprint(
+                    job_spec.job_type,
+                    payload,
                 )
-                if existing and existing.status in ACTIVE_STATUSES:
-                    if existing.id not in seen_job_ids:
-                        jobs.append(_job_to_response(existing))
-                        seen_job_ids.add(existing.id)
-                    continue
-            job = jobs_service.enqueue_job(
-                conn,
-                job_type=request.job_type,
-                payload=payload,
-                priority=request.priority,
-            )
-            if job.id not in seen_job_ids:
-                jobs.append(_job_to_response(job))
-                seen_job_ids.add(job.id)
-    return JobListResponse(jobs=jobs, count=len(jobs))
+
+                if dedupe_enabled:
+                    existing_job = fingerprint_cache.get(fingerprint)
+                    if existing_job is None and fingerprint not in fingerprint_misses:
+                        cur.execute(
+                            f"""
+                            SELECT {JOB_RETURNING_COLUMNS}
+                            FROM job
+                            WHERE fingerprint = %s
+                            ORDER BY id DESC
+                            LIMIT 1
+                            """,
+                            (fingerprint,),
+                        )
+                        existing_row = cur.fetchone()
+                        if existing_row:
+                            candidate = _row_to_job(existing_row)
+                            if candidate.status in ACTIVE_STATUSES:
+                                existing_job = candidate
+                                fingerprint_cache[fingerprint] = candidate
+                            else:
+                                fingerprint_misses.add(fingerprint)
+                        else:
+                            fingerprint_misses.add(fingerprint)
+
+                    if existing_job is not None:
+                        reused.append(existing_job)
+                        continue
+
+                cur.execute(
+                    f"""
+                    INSERT INTO job (job_type, status, payload, priority, fingerprint)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING {JOB_RETURNING_COLUMNS}
+                    """,
+                    (
+                        job_spec.job_type,
+                        "queued",
+                        payload,
+                        request.priority,
+                        fingerprint,
+                    ),
+                )
+                row = cur.fetchone()
+                created = _row_to_job(row)
+                accepted.append(created)
+                if dedupe_enabled:
+                    fingerprint_cache[fingerprint] = created
+                    fingerprint_misses.discard(fingerprint)
+
+    return JobEnqueueResponse(accepted=accepted, reused=reused, rejected=rejected)
+
 
 
 @router.get("", response_model=JobListResponse)
