@@ -96,6 +96,26 @@ def seeded_client(fake_db: FakeDatabase) -> Iterable[TestClient]:
                     "INSERT INTO transcript (episode_id, source, lang, text) VALUES (%s, %s, %s, %s)",
                     (episode_id, "upload", "en", transcript_text),
                 )
+            cur.execute(
+                "INSERT INTO episode_outline (episode_id, start_ms, end_ms, heading, bullet_points) VALUES (%s, %s, %s, %s, %s)",
+                (
+                    1,
+                    0,
+                    90000,
+                    "Foundations",
+                    "- Safe protocols\n- Benefits overview",
+                ),
+            )
+            cur.execute(
+                "INSERT INTO episode_outline (episode_id, start_ms, end_ms, heading, bullet_points) VALUES (%s, %s, %s, %s, %s)",
+                (
+                    1,
+                    90000,
+                    180000,
+                    "Protocol deep dive",
+                    "• Scheduling cold exposure\n• Contrast showers",
+                ),
+            )
         yield client
 
 
@@ -126,6 +146,35 @@ def test_episode_endpoint_omits_transcript_text(
     assert payload["id"] == episode_id
     assert "transcript" not in payload
     assert transcript_text not in response.text
+
+
+def test_episode_outline_endpoint_returns_outline(seeded_client: TestClient) -> None:
+    response = seeded_client.get("/episodes/1/outline")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["episode_id"] == 1
+    assert payload["title"] == "Ep. 825 - Dominic D’Agostino"
+
+    outline = payload["outline"]
+    assert [item["heading"] for item in outline] == ["Foundations", "Protocol deep dive"]
+    assert outline[0]["start_ms"] == 0
+    assert outline[1]["start_ms"] == 90000
+
+    assert outline[0]["bullet_points"] == ["Safe protocols", "Benefits overview"]
+    assert outline[1]["bullet_points"] == ["Scheduling cold exposure", "Contrast showers"]
+
+    for item in outline:
+        for bullet in item.get("bullet_points", []):
+            assert "SECRET" not in bullet
+
+
+def test_episode_outline_endpoint_missing_returns_404(seeded_client: TestClient) -> None:
+    response = seeded_client.get("/episodes/2/outline")
+    assert response.status_code == 404
+
+    payload = response.json()
+    assert payload["error"] == "outline not available"
 
 
 def test_claim_endpoints_return_seed_data(seeded_client: TestClient) -> None:
@@ -162,6 +211,7 @@ def test_search_endpoint_matches_claims(seeded_client: TestClient) -> None:
         ("/episodes/1", None),
         ("/episodes/2", None),
         ("/episodes/3", None),
+        ("/episodes/1/outline", None),
         ("/topics/ketones/claims", None),
         ("/claims/1", None),
         ("/search", {"q": "ketones"}),
