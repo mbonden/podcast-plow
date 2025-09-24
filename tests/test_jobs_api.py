@@ -48,16 +48,22 @@ def test_enqueue_single_job_with_priority(
     response = client.post(
         "/jobs",
         json={
-            "job_type": "summarize_episode",
-            "payload": {"episode_id": 42},
+            "jobs": [
+                {
+                    "type": "summarize_episode",
+                    "payload": {"episode_id": 42},
+                }
+            ],
             "priority": 7,
         },
     )
     assert response.status_code == 201
 
     payload = response.json()
-    assert payload["count"] == 1
-    job = payload["jobs"][0]
+    assert len(payload["accepted"]) == 1
+    assert payload["reused"] == []
+    assert payload["rejected"] == []
+    job = payload["accepted"][0]
 
     assert job["job_type"] == "summarize_episode"
     assert job["status"] == "queued"
@@ -73,25 +79,58 @@ def test_enqueue_multiple_jobs(client: TestClient, fake_db: FakeDatabase) -> Non
     response = client.post(
         "/jobs",
         json={
-            "job_type": "extract",
-            "payload": [
-                {"episode_id": 1},
-                {"episode_id": 2},
+            "jobs": [
+                {
+                    "type": "extract",
+                    "payload": {"episode_id": 1},
+                },
+                {
+                    "type": "extract",
+                    "payload": {"episode_id": 2},
+                },
             ],
         },
     )
     assert response.status_code == 201
 
     payload = response.json()
-    assert payload["count"] == 2
-    job_ids = [job["id"] for job in payload["jobs"]]
+    assert len(payload["accepted"]) == 2
+    assert payload["reused"] == []
+    assert payload["rejected"] == []
+    job_ids = [job["id"] for job in payload["accepted"]]
     assert len(set(job_ids)) == 2
-    assert all(job["status"] == "queued" for job in payload["jobs"])
-    assert {job["payload"]["episode_id"] for job in payload["jobs"]} == {1, 2}
+    assert all(job["status"] == "queued" for job in payload["accepted"])
+    assert {job["payload"]["episode_id"] for job in payload["accepted"]} == {1, 2}
 
     stored_ids = {row["payload"].get("episode_id") for row in fake_db.tables["job"]}
     assert stored_ids == {1, 2}
     assert all(row["priority"] == 0 for row in fake_db.tables["job"])
+
+
+def test_enqueue_legacy_payload_format_supported(
+    client: TestClient, fake_db: FakeDatabase
+) -> None:
+    response = client.post(
+        "/jobs",
+        json={
+            "job_type": "legacy",
+            "payload": {"value": 123},
+            "dedupe": False,
+        },
+    )
+    assert response.status_code == 201
+
+    data = response.json()
+    assert len(data["accepted"]) == 1
+    assert data["reused"] == []
+    assert data["rejected"] == []
+    job = data["accepted"][0]
+    assert job["job_type"] == "legacy"
+    assert job["payload"] == {"value": 123}
+
+    stored = fake_db.tables["job"][0]
+    assert stored["job_type"] == "legacy"
+    assert stored["payload"] == {"value": 123}
 
 
 def test_enqueue_with_dedupe_returns_existing_job(
@@ -100,13 +139,17 @@ def test_enqueue_with_dedupe_returns_existing_job(
     first = client.post(
         "/jobs",
         json={
-            "job_type": "summarize_episode",
-            "payload": {"episode_id": 99},
+            "jobs": [
+                {
+                    "type": "summarize_episode",
+                    "payload": {"episode_id": 99},
+                }
+            ],
             "priority": 5,
             "dedupe": True,
         },
     )
-    first_id = first.json()["jobs"][0]["id"]
+    first_id = first.json()["accepted"][0]["id"]
 
     with app_module.db_conn() as conn:
         cur = conn.cursor()
@@ -118,8 +161,12 @@ def test_enqueue_with_dedupe_returns_existing_job(
     second = client.post(
         "/jobs",
         json={
-            "job_type": "summarize_episode",
-            "payload": {"episode_id": 99},
+            "jobs": [
+                {
+                    "type": "summarize_episode",
+                    "payload": {"episode_id": 99},
+                }
+            ],
             "priority": 1,
             "dedupe": True,
         },
@@ -127,9 +174,11 @@ def test_enqueue_with_dedupe_returns_existing_job(
     assert second.status_code == 201
     second_body = second.json()
 
-    assert second_body["count"] == 1
-    assert second_body["jobs"][0]["id"] == first_id
-    assert second_body["jobs"][0]["status"] == "running"
+    assert second_body["accepted"] == []
+    assert len(second_body["reused"]) == 1
+    assert second_body["reused"][0]["id"] == first_id
+    assert second_body["reused"][0]["status"] == "running"
+    assert second_body["rejected"] == []
     assert len(fake_db.tables["job"]) == 1
 
 
@@ -139,19 +188,27 @@ def test_enqueue_with_string_false_does_not_dedupe(
     first = client.post(
         "/jobs",
         json={
-            "job_type": "summarize_episode",
-            "payload": {"episode_id": 101},
+            "jobs": [
+                {
+                    "type": "summarize_episode",
+                    "payload": {"episode_id": 101},
+                }
+            ],
             "priority": 1,
             "dedupe": True,
         },
     )
-    first_id = first.json()["jobs"][0]["id"]
+    first_id = first.json()["accepted"][0]["id"]
 
     second = client.post(
         "/jobs",
         json={
-            "job_type": "summarize_episode",
-            "payload": {"episode_id": 101},
+            "jobs": [
+                {
+                    "type": "summarize_episode",
+                    "payload": {"episode_id": 101},
+                }
+            ],
             "priority": 3,
             "dedupe": "false",
         },
@@ -159,17 +216,26 @@ def test_enqueue_with_string_false_does_not_dedupe(
     assert second.status_code == 201
     payload = second.json()
 
-    assert payload["count"] == 1
-    assert payload["jobs"][0]["id"] != first_id
+    assert len(payload["accepted"]) == 1
+    assert payload["accepted"][0]["id"] != first_id
+    assert payload["reused"] == []
+    assert payload["rejected"] == []
     assert len(fake_db.tables["job"]) == 2
 
 
 def test_get_job_returns_latest_status(client: TestClient) -> None:
     create_resp = client.post(
         "/jobs",
-        json={"job_type": "evidence", "payload": {"claim_id": 9}},
+        json={
+            "jobs": [
+                {
+                    "type": "evidence",
+                    "payload": {"claim_id": 9},
+                }
+            ]
+        },
     )
-    job_id = create_resp.json()["jobs"][0]["id"]
+    job_id = create_resp.json()["accepted"][0]["id"]
 
     with app_module.db_conn() as conn:
         cur = conn.cursor()
@@ -202,12 +268,26 @@ def test_list_jobs_supports_filters_and_limit(
 ) -> None:
     client.post(
         "/jobs",
-        json={"job_type": "summarize", "payload": {"episode_id": 1}},
+        json={
+            "jobs": [
+                {
+                    "type": "summarize",
+                    "payload": {"episode_id": 1},
+                }
+            ]
+        },
     )
     second = client.post(
         "/jobs",
-        json={"job_type": "grade", "payload": {"claim_id": 2}},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "grade",
+                    "payload": {"claim_id": 2},
+                }
+            ]
+        },
+    ).json()["accepted"][0]
 
     with app_module.db_conn() as conn:
         cur = conn.cursor()
@@ -228,20 +308,52 @@ def test_list_jobs_supports_filters_and_limit(
 def test_list_jobs_orders_by_priority_then_id(client: TestClient) -> None:
     low = client.post(
         "/jobs",
-        json={"job_type": "summarize", "payload": {"episode_id": 1}, "priority": 1},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "summarize",
+                    "payload": {"episode_id": 1},
+                }
+            ],
+            "priority": 1,
+        },
+    ).json()["accepted"][0]
     mid = client.post(
         "/jobs",
-        json={"job_type": "summarize", "payload": {"episode_id": 2}, "priority": 5},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "summarize",
+                    "payload": {"episode_id": 2},
+                }
+            ],
+            "priority": 5,
+        },
+    ).json()["accepted"][0]
     high = client.post(
         "/jobs",
-        json={"job_type": "summarize", "payload": {"episode_id": 3}, "priority": 9},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "summarize",
+                    "payload": {"episode_id": 3},
+                }
+            ],
+            "priority": 9,
+        },
+    ).json()["accepted"][0]
     later_mid = client.post(
         "/jobs",
-        json={"job_type": "summarize", "payload": {"episode_id": 4}, "priority": 5},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "summarize",
+                    "payload": {"episode_id": 4},
+                }
+            ],
+            "priority": 5,
+        },
+    ).json()["accepted"][0]
 
     listing = client.get("/jobs?limit=4").json()
     ordered_ids = [job["id"] for job in listing["jobs"]]
@@ -252,16 +364,40 @@ def test_list_jobs_orders_by_priority_then_id(client: TestClient) -> None:
 def test_list_jobs_supports_offset(client: TestClient) -> None:
     first = client.post(
         "/jobs",
-        json={"job_type": "alpha", "payload": {"value": 1}, "priority": 10},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "alpha",
+                    "payload": {"value": 1},
+                }
+            ],
+            "priority": 10,
+        },
+    ).json()["accepted"][0]
     second = client.post(
         "/jobs",
-        json={"job_type": "alpha", "payload": {"value": 2}, "priority": 8},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "alpha",
+                    "payload": {"value": 2},
+                }
+            ],
+            "priority": 8,
+        },
+    ).json()["accepted"][0]
     third = client.post(
         "/jobs",
-        json={"job_type": "alpha", "payload": {"value": 3}, "priority": 6},
-    ).json()["jobs"][0]
+        json={
+            "jobs": [
+                {
+                    "type": "alpha",
+                    "payload": {"value": 3},
+                }
+            ],
+            "priority": 6,
+        },
+    ).json()["accepted"][0]
 
     response = client.get("/jobs?limit=1&offset=1")
     assert response.status_code == 200

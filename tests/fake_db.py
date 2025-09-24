@@ -599,6 +599,18 @@ class FakeDatabase:
                 job_type = params[param_index]
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
+            if "where fingerprint = %s" in normalized:
+                fingerprint = params[param_index]
+                param_index += 1
+                rows = [
+                    row for row in rows if row.get("fingerprint") == fingerprint
+                ]
+            if "and fingerprint = %s" in normalized:
+                fingerprint = params[param_index]
+                param_index += 1
+                rows = [
+                    row for row in rows if row.get("fingerprint") == fingerprint
+                ]
 
             if "order by priority desc" in normalized:
                 rows.sort(
@@ -874,6 +886,7 @@ class FakeDatabase:
             processed.setdefault("created_at", self._tick())
             processed.setdefault("updated_at", processed.get("created_at"))
             processed.setdefault("priority", 0)
+            processed.setdefault("fingerprint", None)
 
         if table == "job_queue":
             processed.setdefault("status", "queued")

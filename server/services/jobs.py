@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,25 @@ def _row_to_job(row: Any) -> Job:
         max_attempts=int(max_attempts),
         last_error=last_error,
     )
+
+
+def compute_job_fingerprint(job_type: str, payload: Mapping[str, Any] | None = None) -> str:
+    """Return a stable fingerprint for a job type/payload pair."""
+
+    normalized_type = (job_type or "").strip()
+    if payload is None:
+        normalized_payload: Mapping[str, Any] = {}
+    else:
+        normalized_payload = payload
+
+    serialized = json.dumps(
+        normalized_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    message = f"{normalized_type}:{serialized}".encode("utf-8")
+    return hashlib.sha256(message).hexdigest()
 
 
 def enqueue_job(
@@ -218,7 +238,14 @@ def mark_job_failed(
     )
 
 
-def list_jobs(conn, *, status: str | None = None, limit: int | None = None) -> list[Job]:
+def list_jobs(
+    conn,
+    *,
+    status: str | None = None,
+    job_type: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[Job]:
     """Return queued jobs ordered by priority and run time."""
 
     params: list[Any] = []
@@ -228,15 +255,26 @@ def list_jobs(conn, *, status: str | None = None, limit: int | None = None) -> l
         FROM job_queue
         """
     )
+    filters: list[str] = []
     if status is not None:
-        sql += " WHERE status = %s"
+        filters.append("status = %s")
         params.append(status)
+    if job_type is not None:
+        filters.append("job_type = %s")
+        params.append(job_type)
+
+    if filters:
+        sql += " WHERE " + " AND ".join(filters)
 
     sql += " ORDER BY priority DESC, run_at, id"
 
     if limit is not None:
         sql += " LIMIT %s"
         params.append(int(limit))
+
+    if offset:
+        sql += " OFFSET %s"
+        params.append(int(offset))
 
     with conn.cursor() as cur:
         cur.execute(sql, tuple(params))
@@ -247,6 +285,7 @@ def list_jobs(conn, *, status: str | None = None, limit: int | None = None) -> l
 
 __all__ = [
     "Job",
+    "compute_job_fingerprint",
     "enqueue_job",
     "dequeue_job",
     "mark_job_done",
