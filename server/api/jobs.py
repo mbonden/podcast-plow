@@ -4,31 +4,49 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from datetime import datetime, timezone
-
-from typing import Any
+sa
+from typing import Any, Sequence
 
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-try:  # pragma: no cover - psycopg optional in some environments
-    from psycopg import errors as psycopg_errors  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - test environment without psycopg
-    psycopg_errors = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - executed in Docker container
     from server.db.utils import db_conn
+    from server.services import jobs as jobs_service
+    from server.services.jobs import _row_to_job
 except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
-    if exc.name not in {"server", "server.db", "server.db.utils"}:
+    if exc.name not in {
+        "server",
+        "server.db",
+        "server.db.utils",
+        "server.services",
+        "server.services.jobs",
+    }:
         raise
     from db.utils import db_conn
-
-try:  # pragma: no cover - executed in Docker container
-    from server.services import jobs as jobs_service
-except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
-    if exc.name not in {"server", "server.services", "server.services.jobs"}:
-        raise
     from services import jobs as jobs_service
+    from services.jobs import _row_to_job
+
+JOB_RETURNING_COLUMNS = ", ".join(
+    (
+        "id",
+        "job_type",
+        "payload",
+        "status",
+        "priority",
+        "run_at",
+        "attempts",
+        "max_attempts",
+        "last_error",
+        "result",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+    )
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
@@ -364,7 +382,7 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
     reused: list[JobResponse] = []
     rejected: list[RejectedJob] = []
     dedupe_enabled = bool(request.dedupe)
-    fingerprint_cache: dict[str, JobResponse] = {}
+    fingerprint_cache: dict[str, jobs_service.Job] = {}
     fingerprint_misses: set[str] = set()
 
     with db_conn() as conn:
@@ -375,19 +393,14 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                 payload,
             )
 
-            existing_job: JobResponse | None = None
+
+            existing_job: jobs_service.Job | None = None
+
             if dedupe_enabled:
-                cached = fingerprint_cache.get(fingerprint)
-                if cached is not None:
-                    refreshed = _refresh_job_status(conn, cached)
-                    if refreshed.status in ACTIVE_STATUSES:
-                        existing_job = refreshed
-                        fingerprint_cache[fingerprint] = refreshed
-                    else:
-                        fingerprint_cache.pop(fingerprint, None)
-                        fingerprint_misses.add(fingerprint)
-                elif fingerprint not in fingerprint_misses:
-                    existing_row = None
+                existing_job = fingerprint_cache.get(fingerprint)
+                existing_row: Any | None = None
+                if existing_job is None and fingerprint not in fingerprint_misses:
+
                     with conn.cursor() as cur:
                         cur.execute(
                             f"""
@@ -400,48 +413,77 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                             (fingerprint,),
                         )
                         existing_row = cur.fetchone()
-                    if existing_row:
-                        candidate = _refresh_job_status(
-                            conn,
-                            _row_to_job(existing_row),
-                        )
-                        if candidate.status in ACTIVE_STATUSES:
-                            existing_job = candidate
-                            fingerprint_cache[fingerprint] = candidate
-                        else:
-                            fingerprint_misses.add(fingerprint)
+
+                if existing_row:
+                    candidate = _row_to_job(existing_row)
+                    queue_snapshot = jobs_service.get_job(conn, candidate.id)
+                    if queue_snapshot and queue_snapshot.status in ACTIVE_STATUSES:
+                        existing_job = queue_snapshot
+                        fingerprint_cache[fingerprint] = queue_snapshot
                     else:
                         fingerprint_misses.add(fingerprint)
+                elif existing_job is None:
+                    fingerprint_misses.add(fingerprint)
 
             if existing_job is not None:
-                reused.append(existing_job)
+                reused.append(_job_to_response(existing_job))
                 continue
 
-
-            queued_job = jobs_service.enqueue_job(
+            queue_job = jobs_service.enqueue_job(
                 conn,
-                job_spec.job_type,
-                payload,
+                job_type=job_spec.job_type,
+                payload=payload,
                 priority=request.priority,
             )
 
-
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""
-                    INSERT INTO job (job_type, status, payload, priority, fingerprint)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING {JOB_RETURNING_SQL}
+                    """
+                    INSERT INTO job (
+                        id,
+                        job_type,
+                        status,
+                        payload,
+                        priority,
+                        fingerprint,
+                        run_at,
+                        attempts,
+                        max_attempts,
+                        last_error,
+                        result,
+                        created_at,
+                        updated_at,
+                        started_at,
+                        finished_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        job_spec.job_type,
-                        queued_job.status,
+                        queue_job.id,
+                        queue_job.job_type,
+                        queue_job.status,
+
                         payload,
-                        request.priority,
+                        queue_job.priority,
                         fingerprint,
+                        queue_job.run_at,
+                        queue_job.attempts,
+                        queue_job.max_attempts,
+                        queue_job.last_error,
+                        queue_job.result,
+                        queue_job.created_at,
+                        queue_job.updated_at,
+                        queue_job.started_at,
+                        queue_job.finished_at,
                     ),
                 )
-                row = cur.fetchone()
+
+
+            accepted.append(_job_to_response(queue_job))
+            if dedupe_enabled:
+                fingerprint_cache[fingerprint] = queue_job
+                fingerprint_misses.discard(fingerprint)
+
 
             created = _row_to_job(row).model_copy(
                 update={

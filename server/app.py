@@ -1,6 +1,8 @@
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -24,6 +26,14 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
 
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(jobs_router)
 app.include_router(ui_router, include_in_schema=False)
 
@@ -942,14 +952,8 @@ def search(q: str = Query(..., min_length=2)):
 
         return {"q": q, "episodes": episodes, "claims": claims}
 
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/docs")
 
-@app.exception_handler(StarletteHTTPException)
-async def render_not_found(request: Request, exc: StarletteHTTPException):
-    accept = request.headers.get("accept", "").lower()
-    if exc.status_code == 404 and "text/html" in accept:
-        return ui_templates.TemplateResponse(
-            "404.html",
-            {"request": request},
-            status_code=exc.status_code,
-        )
-    return await http_exception_handler(request, exc)
+
