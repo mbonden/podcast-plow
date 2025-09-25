@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}Podcast claim tracker{% endblock %}</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", "Segoe UI", sans-serif;
+        line-height: 1.6;
+        --accent: #2563eb;
+        --muted: #4b5563;
+        --bg: #f9fafb;
+        --border: #d1d5db;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: #111827;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      a:hover,
+      a:focus {
+        text-decoration: underline;
+      }
+
+      header {
+        background: white;
+        border-bottom: 1px solid var(--border);
+        padding: 1.5rem 2rem 1rem;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: 1.75rem;
+      }
+
+      nav {
+        margin-top: 0.75rem;
+      }
+
+      nav a {
+        margin-right: 1rem;
+        font-weight: 600;
+      }
+
+      .disclaimer {
+        background: #fff7ed;
+        border: 1px solid #fb923c;
+        border-radius: 8px;
+        color: #9a3412;
+        padding: 0.75rem 1rem;
+        margin: 1.5rem 2rem 0;
+        font-size: 0.95rem;
+      }
+
+      main {
+        padding: 0 2rem 4rem;
+      }
+
+      footer {
+        background: white;
+        border-top: 1px solid var(--border);
+        padding: 1.5rem 2rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      footer a {
+        color: inherit;
+      }
+
+      .footer-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+        margin-top: 0.5rem;
+      }
+
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1.5rem;
+      }
+
+      .card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 10px 25px rgba(15, 23, 42, 0.05);
+        padding: 1.5rem;
+        border: 1px solid rgba(209, 213, 219, 0.6);
+      }
+
+      .card h2 {
+        margin-top: 0;
+        font-size: 1.25rem;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        background: #e0f2fe;
+        color: #0c4a6e;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-right: 0.5rem;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f172a;
+          --border: #1f2937;
+        }
+
+        body {
+          color: #f8fafc;
+        }
+
+        header,
+        footer,
+        .card,
+        .disclaimer {
+          background: #111827;
+          border-color: #1f2937;
+        }
+
+        .card {
+          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.35);
+        }
+
+        .disclaimer {
+          color: #fbbf24;
+        }
+
+        nav a,
+        footer a {
+          color: #bfdbfe;
+        }
+
+        .badge {
+          background: rgba(59, 130, 246, 0.15);
+          color: #bfdbfe;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><a href="/">Podcast claim tracker</a></h1>
+      <nav>
+        <a href="/">Episodes</a>
+      </nav>
+    </header>
+    <div class="disclaimer">{{ site_disclaimer }}</div>
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <footer>
+      <div>Stay skeptical. Review the sources below before acting on any protocol.</div>
+      <div class="footer-meta">
+        <a href="{{ repo_url }}" target="_blank" rel="noopener">View the code on GitHub</a>
+        <span>Version {{ request.app.version }}</span>
+      </div>
+    </footer>
+  </body>
+</html>

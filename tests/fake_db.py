@@ -213,6 +213,7 @@ class FakeDatabase:
             "claim_grade": [],
             "transcript": [],
             "transcript_chunk": [],
+            "job": [],
             "job_queue": [],
         }
         self._auto_ids: Dict[str, int] = {
@@ -225,6 +226,7 @@ class FakeDatabase:
             "claim_grade": 1,
             "transcript": 1,
             "transcript_chunk": 1,
+            "job": 1,
             "job_queue": 1,
         }
         self._insert_order = 0
@@ -236,6 +238,7 @@ class FakeDatabase:
     def execute(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
         stripped = sql.strip()
         normalized = _normalize_sql(stripped)
+        normalized_query = normalized
 
         if normalized.startswith("insert into"):
             returning_columns: List[str] | None = None
@@ -682,8 +685,8 @@ class FakeDatabase:
             ]
 
         if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ):
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
+        ) and "from job_queue" in normalized:
 
             rows = list(self.tables["job_queue"])
             param_index = 0
@@ -755,7 +758,10 @@ class FakeDatabase:
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
 
-            if "payload = %s" in normalized_query:
+            if any(
+                clause in normalized_query
+                for clause in ("payload = %s", "payload::jsonb = %s::jsonb")
+            ):
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):

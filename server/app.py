@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import http_exception_handler
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.db import db_connection  # IMPORTANT: import from /app root
 
@@ -11,10 +13,18 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
         raise
     from api.jobs import router as jobs_router
 
+try:  # pragma: no cover - exercised in Docker container
+    from server.ui import router as ui_router, templates as ui_templates
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
+    if exc.name not in {"server", "server.ui"}:
+        raise
+    from ui import router as ui_router, templates as ui_templates
+
 
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
 app.include_router(jobs_router)
+app.include_router(ui_router, include_in_schema=False)
 
 
 def db_conn():
@@ -225,3 +235,15 @@ def search(q: str = Query(..., min_length=2)):
         cur.execute("SELECT id, raw_text, topic FROM claim WHERE raw_text ILIKE %s ORDER BY id DESC LIMIT 20", (f"%{q}%",))
         claims = [{"id": r[0], "raw_text": r[1], "topic": r[2]} for r in cur.fetchall()]
         return {"q": q, "episodes": episodes, "claims": claims}
+
+
+@app.exception_handler(StarletteHTTPException)
+async def render_not_found(request: Request, exc: StarletteHTTPException):
+    accept = request.headers.get("accept", "").lower()
+    if exc.status_code == 404 and "text/html" in accept:
+        return ui_templates.TemplateResponse(
+            "404.html",
+            {"request": request},
+            status_code=exc.status_code,
+        )
+    return await http_exception_handler(request, exc)
