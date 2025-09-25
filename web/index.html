@@ -1,12 +1,99 @@
-<!doctype html>
+
+<!DOCTYPE html>
+
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Podcast Plow</title>
+
+    <title>Podcast Plow – Topic Search</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
-  <body class="bg-background text-foreground">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <h1>Topic Explorer</h1>
+        <p class="page__tagline">
+          Search claims across episodes and narrow results with evidence grades, domains, and risk level.
+        </p>
+        <form id="search-form" class="search-form">
+          <label class="search-form__label" for="search-query">Search topics &amp; claims</label>
+          <div class="search-form__input-group">
+            <input
+              type="search"
+              id="search-query"
+              name="q"
+              minlength="2"
+              placeholder="Try \"ketone\" or \"sleep\""
+              required
+            />
+            <button type="submit">Search</button>
+          </div>
+        </form>
+      </header>
+
+      <section id="filters" class="filters" aria-live="polite" hidden>
+        <div class="filters__group">
+          <label for="filter-grade">Grade</label>
+          <select id="filter-grade">
+            <option value="">All grades</option>
+            <option value="strong">Strong</option>
+            <option value="moderate">Moderate</option>
+            <option value="weak">Weak</option>
+            <option value="unsupported">Unsupported</option>
+          </select>
+        </div>
+        <div class="filters__group" id="domain-filter" hidden>
+          <label for="filter-domain">Domain</label>
+          <select id="filter-domain">
+            <option value="">All domains</option>
+          </select>
+        </div>
+        <div class="filters__group">
+          <label for="filter-risk">Risk level</label>
+          <select id="filter-risk">
+            <option value="">All levels</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      </section>
+
+      <section id="results" class="results" aria-live="polite">
+        <p class="results__placeholder">Start by searching for a topic above.</p>
+      </section>
+
+      <nav id="pagination" class="pagination" aria-label="Search results pagination" hidden>
+        <button id="page-prev" type="button" disabled>Previous</button>
+        <span id="page-info" class="pagination__info"></span>
+        <button id="page-next" type="button" disabled>Next</button>
+      </nav>
+    </main>
+
+    <template id="claim-template">
+      <article class="claim">
+        <header class="claim__header">
+          <h2 class="claim__title"></h2>
+          <div class="claim__badges"></div>
+        </header>
+        <dl class="claim__meta">
+          <div>
+            <dt>Episode</dt>
+            <dd class="claim__episode"></dd>
+          </div>
+          <div>
+            <dt>Topic</dt>
+            <dd class="claim__topic"></dd>
+          </div>
+        </dl>
+        <footer class="claim__footer">
+          <a class="claim__link" target="_blank" rel="noopener" href="">View claim details</a>
+        </footer>
+      </article>
+    </template>
+
+    <script src="app.js" type="module"></script>
+
   </body>
 </html>

@@ -29,6 +29,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
 ACTIVE_STATUSES = {"queued", "running"}
+JOB_RETURNING_COLUMNS = jobs_service._JOB_SELECT
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:
@@ -231,6 +232,12 @@ def _job_to_response(job: jobs_service.Job) -> JobResponse:
     )
 
 
+def _row_to_job(row: Any) -> jobs_service.Job:
+    if isinstance(row, jobs_service.Job):
+        return row
+    return jobs_service._row_to_job(row)
+
+
 @router.post("", response_model=JobEnqueueResponse, status_code=201)
 def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
     """Insert new jobs into the queue with optional deduplication."""
@@ -301,7 +308,11 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                     fingerprint_cache[fingerprint] = created
                     fingerprint_misses.discard(fingerprint)
 
-    return JobEnqueueResponse(accepted=accepted, reused=reused, rejected=rejected)
+    return JobEnqueueResponse(
+        accepted=[_job_to_response(job) for job in accepted],
+        reused=[_job_to_response(job) for job in reused],
+        rejected=rejected,
+    )
 
 
 
