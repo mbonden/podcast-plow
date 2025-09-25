@@ -812,7 +812,10 @@ class FakeDatabase:
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
 
-            if "payload = %s" in normalized_query:
+            if any(
+                clause in normalized_query
+                for clause in ("payload = %s", "payload::jsonb = %s::jsonb")
+            ):
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):

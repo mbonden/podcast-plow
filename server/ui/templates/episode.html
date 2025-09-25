@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ episode.title }} · Podcast claim tracker{% endblock %}
+{% block content %}
+  <a href="/" class="muted">← Back to episodes</a>
+  <header style="margin-top: 1rem; margin-bottom: 2rem;">
+    <h2 style="margin-bottom: 0.25rem;">{{ episode.title }}</h2>
+    {% if episode.published_at %}
+      <div class="muted">Published {{ episode.published_at.strftime('%B %d, %Y') }}</div>
+    {% endif %}
+    <div style="margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+      {% if episode.show_notes_url %}
+        <a href="{{ episode.show_notes_url }}" target="_blank" rel="noopener">Show notes</a>
+      {% endif %}
+      {% if episode.youtube_url %}
+        <a href="{{ episode.youtube_url }}" target="_blank" rel="noopener">Watch on YouTube</a>
+      {% endif %}
+      {% if episode.audio_url %}
+        <a href="{{ episode.audio_url }}" target="_blank" rel="noopener">Listen to audio</a>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if episode.tl_dr %}
+    <section class="card" style="margin-bottom: 2rem;">
+      <h3 style="margin-top: 0;">TL;DR</h3>
+      <p>{{ episode.tl_dr }}</p>
+    </section>
+  {% endif %}
+
+  {% if episode.narrative %}
+    <section class="card" style="margin-bottom: 2rem;">
+      <h3 style="margin-top: 0;">Narrative summary</h3>
+      {% for paragraph in episode.narrative.split('\n') if paragraph.strip() %}
+        <p>{{ paragraph }}</p>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  <section>
+    <h3>Claims &amp; evidence</h3>
+    {% if episode.claims %}
+      <ol style="padding-left: 1.25rem;">
+        {% for claim in episode.claims %}
+          <li style="margin-bottom: 1.5rem;">
+            <article class="card">
+              <h4 style="margin-top: 0;">Claim {{ loop.index }}</h4>
+              <p style="font-size: 1.1rem; font-weight: 600;">{{ claim.statement }}</p>
+              <div class="muted" style="margin-bottom: 0.75rem;">
+                {% if claim.topic %}<span class="badge">Topic: {{ claim.topic }}</span>{% endif %}
+                {% if claim.domain %}<span class="badge">Domain: {{ claim.domain }}</span>{% endif %}
+                {% if claim.risk_level %}<span class="badge">Risk: {{ claim.risk_level }}</span>{% endif %}
+              </div>
+              {% if claim.grade %}
+                <p><strong>Latest grade:</strong> {{ claim.grade|capitalize }}</p>
+              {% endif %}
+              {% if claim.rationale %}
+                <p class="muted">Rationale: {{ claim.rationale }}</p>
+              {% endif %}
+
+              {% if claim.evidence %}
+                <div style="margin-top: 1rem;">
+                  <h5 style="margin: 0 0 0.5rem;">Evidence sources</h5>
+                  <ul style="padding-left: 1.1rem;">
+                    {% for source in claim.evidence %}
+                      <li style="margin-bottom: 0.5rem;">
+                        {% if source.url %}
+                          <a href="{{ source.url }}" target="_blank" rel="noopener">{{ source.title }}</a>
+                        {% else %}
+                          <span>{{ source.title }}</span>
+                        {% endif %}
+                        {% if source.year or source.journal %}
+                          <span class="muted">—
+                            {% if source.year %}{{ source.year }}{% endif %}
+                            {% if source.year and source.journal %} · {% endif %}
+                            {% if source.journal %}{{ source.journal }}{% endif %}
+                          </span>
+                        {% endif %}
+                        {% if source.stance %}
+                          <div class="muted">Stance: {{ source.stance }}</div>
+                        {% endif %}
+                        {% if source.notes %}
+                          <div class="muted">Notes: {{ source.notes }}</div>
+                        {% endif %}
+                      </li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% else %}
+                <p class="muted">No published evidence sources yet.</p>
+              {% endif %}
+            </article>
+          </li>
+        {% endfor %}
+      </ol>
+    {% else %}
+      <p class="muted">No claims have been extracted for this episode.</p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -5,13 +5,16 @@ from copy import deepcopy
 import json
 from datetime import datetime, timezone
 
-from typing import Any, Sequence
+from typing import Any
 
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from server.services import jobs as jobs_service
+try:  # pragma: no cover - psycopg optional in some environments
+    from psycopg import errors as psycopg_errors  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - test environment without psycopg
+    psycopg_errors = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - executed in Docker container
     from server.db.utils import db_conn
@@ -308,10 +311,49 @@ def _job_to_response(job: jobs_service.Job) -> JobResponse:
     )
 
 
-def _row_to_job(row: Any) -> jobs_service.Job:
-    if isinstance(row, jobs_service.Job):
-        return row
-    return jobs_service._row_to_job(row)
+def _is_missing_table(exc: Exception) -> bool:
+    if psycopg_errors is not None and isinstance(exc, psycopg_errors.UndefinedTable):  # type: ignore[attr-defined]
+        return True
+    if getattr(exc, "pgcode", None) == "42P01":  # PostgreSQL undefined_table
+        return True
+    return False
+
+
+def _record_job_history(
+    conn,
+    job: jobs_service.Job,
+    payload: dict[str, Any],
+    fingerprint: str,
+) -> None:
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO job (id, job_type, status, payload, priority, fingerprint, result, error, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    job.id,
+                    job.job_type,
+                    job.status,
+                    payload,
+                    int(job.priority or 0),
+                    fingerprint,
+                    job.result,
+                    job.last_error,
+                    job.created_at,
+                    job.updated_at or job.created_at,
+                ),
+            )
+    except Exception as exc:  # pragma: no cover - defensive for legacy deployments
+        if _is_missing_table(exc):
+            return
+        if getattr(exc, "pgcode", None) == "23505":  # unique_violation
+            return
+        if psycopg_errors is not None and isinstance(exc, psycopg_errors.UniqueViolation):  # type: ignore[attr-defined]
+            return
+        raise
+
 
 
 @router.post("", response_model=JobEnqueueResponse, status_code=201)
@@ -375,12 +417,14 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                 reused.append(existing_job)
                 continue
 
+
             queued_job = jobs_service.enqueue_job(
                 conn,
                 job_spec.job_type,
                 payload,
                 priority=request.priority,
             )
+
 
             with conn.cursor() as cur:
                 cur.execute(
@@ -405,10 +449,12 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                     "priority": int(queued_job.priority or 0),
                 }
             )
+
             accepted.append(created)
             if dedupe_enabled:
                 fingerprint_cache[fingerprint] = created
                 fingerprint_misses.discard(fingerprint)
+
 
     return JobEnqueueResponse(
         accepted=[_job_to_response(job) for job in accepted],
