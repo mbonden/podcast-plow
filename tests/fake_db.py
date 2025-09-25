@@ -49,6 +49,21 @@ def _ilike_match(value: str, pattern: str) -> bool:
     return re.fullmatch(regex, value, re.IGNORECASE) is not None
 
 
+def _coerce_sortable_date(value: Any) -> float:
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return dt.datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
 def _split_value_tuples(values_part: str) -> List[str]:
     tuples: List[str] = []
     depth = 0
@@ -238,6 +253,7 @@ class FakeDatabase:
     def execute(self, sql: str, params: Sequence[Any]) -> List[Tuple[Any, ...]]:
         stripped = sql.strip()
         normalized = _normalize_sql(stripped)
+        normalized_query = normalized
 
         if normalized.startswith("insert into"):
             returning_columns: List[str] | None = None
@@ -376,7 +392,7 @@ class FakeDatabase:
             row["updated_at"] = self._tick()
             return []
 
-        if normalized.startswith("select id, title from episode where title ilike %s"):
+        if normalized.startswith("select id, title, published_at from episode where title ilike %s"):
             pattern = params[0]
             matches = [
                 episode
@@ -387,13 +403,28 @@ class FakeDatabase:
             matches.sort(
                 key=lambda episode: (
                     0 if episode.get("published_at") is not None else 1,
-                    -(episode.get("published_at") or 0),
+                    -_coerce_sortable_date(episode.get("published_at")),
                     -episode.get("id", 0),
                 )
             )
 
             limited = matches[:20]
-            return [(episode.get("id"), episode.get("title")) for episode in limited]
+            return [
+                (
+                    episode.get("id"),
+                    episode.get("title"),
+                    episode.get("published_at"),
+                )
+                for episode in limited
+            ]
+
+        if (
+            normalized.startswith("with latest_grade as")
+            and "from claim c" in normalized
+            and "where c.raw_text ilike %s or c.normalized_text ilike %s or c.topic ilike %s"
+            in normalized
+        ):
+            return self._select_search_claims(params[0])
 
         if normalized.startswith("select id, raw_text, topic from claim where raw_text ilike %s"):
             pattern = params[0]
@@ -402,6 +433,20 @@ class FakeDatabase:
                 for claim in self.tables["claim"]
                 if _ilike_match(claim.get("raw_text", ""), pattern)
             ]
+
+        if normalized.startswith(
+            "select grade from claim_grade where claim_id = %s order by created_at desc limit 1"
+        ):
+            claim_id = params[0]
+            grades = [
+                row
+                for row in self.tables["claim_grade"]
+                if row.get("claim_id") == claim_id
+            ]
+            grades.sort(key=lambda row: row.get("created_at", 0), reverse=True)
+            if not grades:
+                return []
+            return [(grades[0].get("grade"),)]
 
             matches.sort(key=lambda claim: -claim.get("id", 0))
             limited = matches[:20]
@@ -570,7 +615,9 @@ class FakeDatabase:
                 if column.strip()
             ]
 
+
             rows = [row for row in self.tables["job_queue"] if row is not None]
+
             param_index = 0
 
             def _is_due(row: Dict[str, Any]) -> bool:
@@ -701,6 +748,7 @@ class FakeDatabase:
             ]
 
         if normalized.startswith(
+
             "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
         ) and "from job" in normalized:
             normalized_query = normalized
@@ -711,15 +759,19 @@ class FakeDatabase:
                 if column.strip()
             ]
 
+
             rows = [row for row in self.tables["job"] if row is not None]
             param_index = 0
+            normalized_query = normalized
 
             if "where status = %s" in normalized_query:
                 status = params[param_index]
                 param_index += 1
                 rows = [row for row in rows if row.get("status") == status]
 
+
             if "where job_type = %s" in normalized_query:
+
                 job_type = params[param_index]
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
@@ -742,6 +794,7 @@ class FakeDatabase:
                 ]
 
             if "where payload = %s" in normalized_query or "and payload = %s" in normalized_query:
+
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):
@@ -780,6 +833,8 @@ class FakeDatabase:
             if "offset %s" in normalized_query:
                 offset_value = int(params[param_index])
                 param_index += 1
+            else:
+                offset_value = None
 
             if offset_value:
                 rows = rows[offset_value:]
@@ -790,6 +845,7 @@ class FakeDatabase:
                 return tuple(row.get(column) for column in column_names)
 
             return [_project_job(row) for row in rows]
+
 
         if normalized.startswith(
             "update job_queue set status = %s, attempts = attempts + 1, started_at = now(), updated_at = now() where id = %s"
@@ -803,6 +859,12 @@ class FakeDatabase:
 
             row["started_at"] = self._tick()
             row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["status"] = row["status"]
+                job_row["attempts"] = row["attempts"]
+                job_row["started_at"] = row["started_at"]
+                job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
@@ -816,6 +878,12 @@ class FakeDatabase:
             row["finished_at"] = self._tick()
             row["last_error"] = None
             row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["status"] = row["status"]
+                job_row["finished_at"] = row["finished_at"]
+                job_row["last_error"] = None
+                job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
@@ -829,6 +897,12 @@ class FakeDatabase:
             row["finished_at"] = self._tick()
             row["last_error"] = error
             row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["status"] = row["status"]
+                job_row["finished_at"] = row["finished_at"]
+                job_row["last_error"] = error
+                job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
@@ -844,6 +918,14 @@ class FakeDatabase:
             row["started_at"] = None
             row["finished_at"] = None
             row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["status"] = row["status"]
+                job_row["run_at"] = run_at
+                job_row["last_error"] = error
+                job_row["started_at"] = None
+                job_row["finished_at"] = None
+                job_row["updated_at"] = row["updated_at"]
             return []
 
         raise ValueError(f"Unsupported SQL for fake db: {sql}")
@@ -912,11 +994,13 @@ class FakeDatabase:
 
         if table == "job":
             processed.setdefault("status", "queued")
+
             payload_value = processed.get("payload")
             if isinstance(payload_value, str):
                 try:
                     processed["payload"] = json.loads(payload_value)
                 except json.JSONDecodeError:
+
                     processed["payload"] = {}
             elif isinstance(payload_value, dict):
                 processed["payload"] = dict(payload_value)
@@ -933,8 +1017,27 @@ class FakeDatabase:
             processed.setdefault("error", None)
             processed.setdefault("created_at", self._tick())
             processed.setdefault("updated_at", processed.get("created_at"))
+
             processed.setdefault("started_at", None)
             processed.setdefault("finished_at", None)
+
+            queue_entry = {
+                "id": processed.get("id"),
+                "job_type": processed.get("job_type"),
+                "payload": processed.get("payload"),
+                "status": processed.get("status"),
+                "priority": processed.get("priority"),
+                "run_at": processed.get("run_at"),
+                "attempts": processed.get("attempts", 0),
+                "max_attempts": processed.get("max_attempts", 3),
+                "last_error": processed.get("last_error"),
+                "result": processed.get("result"),
+                "created_at": processed.get("created_at"),
+                "updated_at": processed.get("updated_at"),
+                "started_at": processed.get("started_at"),
+                "finished_at": processed.get("finished_at"),
+            }
+            self.tables["job_queue"].append(queue_entry)
 
         if table == "transcript_chunk":
             processed.setdefault("key_points", None)
@@ -1019,6 +1122,66 @@ class FakeDatabase:
                 )
             )
         return rows
+
+    def _select_search_claims(self, pattern: str) -> List[Tuple[Any, ...]]:
+        rows: List[Tuple[Any, ...]] = []
+        for claim in self.tables["claim"]:
+            raw_text = (claim.get("raw_text") or "")
+            normalized_text = (claim.get("normalized_text") or "")
+            topic = (claim.get("topic") or "")
+
+            if not (
+                _ilike_match(raw_text, pattern)
+                or _ilike_match(normalized_text, pattern)
+                or _ilike_match(topic, pattern)
+            ):
+                continue
+
+            episode = self._find_one("episode", claim.get("episode_id"))
+            if not episode:
+                continue
+
+            latest = self._latest_grade(claim.get("id"))
+            rows.append(
+                (
+                    claim.get("id"),
+                    claim.get("raw_text"),
+                    claim.get("normalized_text"),
+                    claim.get("topic"),
+                    claim.get("domain"),
+                    claim.get("risk_level"),
+                    claim.get("episode_id"),
+                    episode.get("title"),
+                    episode.get("published_at"),
+                    latest.get("grade") if latest else None,
+                    latest.get("rationale") if latest else None,
+                    latest.get("rubric_version") if latest else None,
+                    latest.get("created_at") if latest else None,
+                )
+            )
+
+        def _sort_key(row: Tuple[Any, ...]) -> Tuple[int, float, int]:
+            published_at = row[8]
+            sort_value = 0.0
+            if isinstance(published_at, dt.datetime):
+                if published_at.tzinfo is None:
+                    published_at = published_at.replace(tzinfo=dt.timezone.utc)
+                sort_value = published_at.timestamp()
+            elif isinstance(published_at, (int, float)):
+                sort_value = float(published_at)
+            elif isinstance(published_at, str):
+                try:
+                    sort_value = dt.datetime.fromisoformat(published_at).timestamp()
+                except ValueError:
+                    sort_value = 0.0
+            return (
+                0 if published_at is not None else 1,
+                -sort_value,
+                -int(row[0] or 0),
+            )
+
+        rows.sort(key=_sort_key)
+        return rows[:50]
 
     def _select_claim_detail(self, claim_id: int) -> List[Tuple[Any, ...]]:
         claim = self._find_one("claim", claim_id)
