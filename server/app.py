@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from core.db import db_connection  # IMPORTANT: import from /app root
@@ -14,6 +15,14 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
 
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(jobs_router)
 
 
@@ -225,3 +234,7 @@ def search(q: str = Query(..., min_length=2)):
         cur.execute("SELECT id, raw_text, topic FROM claim WHERE raw_text ILIKE %s ORDER BY id DESC LIMIT 20", (f"%{q}%",))
         claims = [{"id": r[0], "raw_text": r[1], "topic": r[2]} for r in cur.fetchall()]
         return {"q": q, "episodes": episodes, "claims": claims}
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/docs")
+
