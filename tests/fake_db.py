@@ -213,6 +213,7 @@ class FakeDatabase:
             "claim_grade": [],
             "transcript": [],
             "transcript_chunk": [],
+            "job": [],
             "job_queue": [],
         }
         self._auto_ids: Dict[str, int] = {
@@ -225,6 +226,7 @@ class FakeDatabase:
             "claim_grade": 1,
             "transcript": 1,
             "transcript_chunk": 1,
+            "job": 1,
             "job_queue": 1,
         }
         self._insert_order = 0
@@ -682,11 +684,12 @@ class FakeDatabase:
             ]
 
         if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ):
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
+        ) and "from job_queue" in normalized:
 
             rows = list(self.tables["job_queue"])
             param_index = 0
+            normalized_query = normalized
 
             if "where status = %s and run_at <= now()" in normalized_query:
                 status = params[param_index]
@@ -941,19 +944,31 @@ class FakeDatabase:
 
         if table == "job":
             processed.setdefault("status", "queued")
-            processed.setdefault("payload", {})
+
+            payload_value = processed.get("payload")
+            if isinstance(payload_value, str):
+                try:
+                    processed["payload"] = json.loads(payload_value)
+                except json.JSONDecodeError:
+                    processed["payload"] = payload_value
+            elif isinstance(payload_value, dict):
+                processed["payload"] = dict(payload_value)
+            elif payload_value is None:
+                processed["payload"] = {}
+
             processed.setdefault("result", None)
             processed.setdefault("error", None)
-            processed.setdefault("created_at", self._tick())
-            processed.setdefault("updated_at", processed.get("created_at"))
-            processed.setdefault("priority", 0)
             processed.setdefault("fingerprint", None)
 
+            if "created_at" in processed:
+                created_at = processed["created_at"]
+            else:
+                created_at = self._tick()
+                processed["created_at"] = created_at
+            processed.setdefault("updated_at", created_at)
 
+            processed["priority"] = int(processed.get("priority", 0) or 0)
             processed.setdefault("last_error", None)
-            processed.setdefault("result", None)
-            processed.setdefault("created_at", self._tick())
-            processed.setdefault("updated_at", processed.get("created_at"))
             processed.setdefault("started_at", None)
             processed.setdefault("finished_at", None)
 
