@@ -846,11 +846,87 @@ def get_claim(claim_id: int):
 
 @app.get("/search")
 def search(q: str = Query(..., min_length=2)):
-    # Simple naive search until semantic search is added
+    """Return episodes and claims that match the supplied search query."""
+
+    like_pattern = f"%{q}%"
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, title FROM episode WHERE title ILIKE %s ORDER BY published_at DESC NULLS LAST LIMIT 20", (f"%{q}%",))
-        episodes = [{"id": r[0], "title": r[1]} for r in cur.fetchall()]
-        cur.execute("SELECT id, raw_text, topic FROM claim WHERE raw_text ILIKE %s ORDER BY id DESC LIMIT 20", (f"%{q}%",))
-        claims = [{"id": r[0], "raw_text": r[1], "topic": r[2]} for r in cur.fetchall()]
+        cur.execute(
+            """
+            SELECT id, title, published_at
+            FROM episode
+            WHERE title ILIKE %s
+            ORDER BY published_at DESC NULLS LAST, id DESC
+            LIMIT 20
+            """,
+            (like_pattern,),
+        )
+        episodes = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "published_at": row[2],
+            }
+            for row in cur.fetchall()
+        ]
+
+        cur.execute(
+            """
+            WITH latest_grade AS (
+                SELECT DISTINCT ON (claim_id)
+                    claim_id,
+                    grade,
+                    rationale,
+                    rubric_version,
+                    created_at
+                FROM claim_grade
+                ORDER BY claim_id, created_at DESC
+            )
+            SELECT
+                c.id,
+                c.raw_text,
+                c.normalized_text,
+                c.topic,
+                c.domain,
+                c.risk_level,
+                c.episode_id,
+                e.title,
+                e.published_at,
+                lg.grade,
+                lg.rationale,
+                lg.rubric_version,
+                lg.created_at
+            FROM claim c
+            JOIN episode e ON e.id = c.episode_id
+            LEFT JOIN latest_grade lg ON lg.claim_id = c.id
+            WHERE
+                c.raw_text ILIKE %s
+                OR c.normalized_text ILIKE %s
+                OR c.topic ILIKE %s
+            ORDER BY e.published_at DESC NULLS LAST, c.id DESC
+            LIMIT 50
+            """,
+            (like_pattern, like_pattern, like_pattern),
+        )
+
+        claims = []
+        for row in cur.fetchall():
+            claims.append(
+                {
+                    "id": row[0],
+                    "raw_text": row[1],
+                    "normalized_text": row[2],
+                    "topic": row[3],
+                    "domain": row[4],
+                    "risk_level": row[5],
+                    "episode_id": row[6],
+                    "episode_title": row[7],
+                    "episode_published_at": row[8],
+                    "grade": row[9],
+                    "grade_rationale": row[10],
+                    "rubric_version": row[11],
+                    "graded_at": row[12],
+                }
+            )
+
         return {"q": q, "episodes": episodes, "claims": claims}

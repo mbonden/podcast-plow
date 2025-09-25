@@ -44,6 +44,18 @@ Open API docs:
 3. Implement summarization + claim extraction and persist to DB.
 4. Add public UI later under `/web`.
 
+## Frontend
+
+A Vite + React app lives under [`/web`](./web). It uses Tailwind CSS and shadcn/ui-inspired components to present search, topic, and claim views backed by the FastAPI endpoints.
+
+```bash
+cd web
+pnpm install
+pnpm dev
+```
+
+Set `VITE_API_BASE_URL` (see `.env.example`) if your API is not running on `http://localhost:8000`.
+
 ## Safety & Legal
 
 - Keep **full transcripts** private; do not expose via API.

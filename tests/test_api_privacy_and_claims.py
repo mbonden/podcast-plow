@@ -202,7 +202,26 @@ def test_search_endpoint_matches_claims(seeded_client: TestClient) -> None:
 
     payload = response.json()
     assert payload["q"] == "ketones"
-    assert any(item["id"] == 1 for item in payload["claims"])
+
+    episodes = payload.get("episodes")
+    assert isinstance(episodes, list)
+    for episode in episodes:
+        assert "id" in episode
+        assert "title" in episode
+        assert "published_at" in episode
+
+    matching_claims = [item for item in payload["claims"] if item["id"] == 1]
+    assert matching_claims
+    claim = matching_claims[0]
+    assert claim["grade"] == "moderate"
+    assert claim["grade_rationale"]
+    assert claim["rubric_version"]
+    assert claim["graded_at"] is not None
+    assert claim["episode_id"] == 1
+    assert claim["episode_title"] == "Ep. 825 - Dominic D’Agostino"
+    assert "episode_published_at" in claim
+    assert claim["domain"] == "neuro"
+    assert claim["risk_level"] == "low"
 
 
 @pytest.mark.parametrize(
