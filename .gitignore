@@ -5,4 +5,7 @@ __pycache__/
 infra/db_data/
 .pytest_cache/
 .DS_Store
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
 "@" | Out-File -Encoding utf8 -Append .gitignore
