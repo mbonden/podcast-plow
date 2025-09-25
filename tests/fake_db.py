@@ -761,10 +761,10 @@ class FakeDatabase:
             ]
 
         if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error from job_queue"
-        ) or normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error, result, created_at, updated_at, started_at, finished_at from job_queue"
-        ):
+
+            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
+        ) and "from job_queue" in normalized:
+
 
             rows = list(self.tables["job_queue"])
             param_index = 0
@@ -811,7 +811,10 @@ class FakeDatabase:
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
 
-            if "payload = %s" in normalized_query:
+            if any(
+                clause in normalized_query
+                for clause in ("payload = %s", "payload::jsonb = %s::jsonb")
+            ):
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Episodes · Podcast claim tracker{% endblock %}
+{% block content %}
+  <section>
+    <h2>Latest episodes</h2>
+    <p class="muted">Summaries are paraphrased; dive into the claim cards to review evidence and grades.</p>
+    <div class="card-grid">
+      {% for episode in episodes %}
+        <article class="card">
+          <h2><a href="/episodes/{{ episode.id }}/review">{{ episode.title }}</a></h2>
+          {% if episode.published_at %}
+            <div class="muted">Published {{ episode.published_at.strftime('%B %d, %Y') }}</div>
+          {% endif %}
+          {% if episode.tl_dr %}
+            <p>{{ episode.tl_dr }}</p>
+          {% elif episode.narrative %}
+            <p>{{ episode.narrative[:220] }}{% if episode.narrative|length > 220 %}…{% endif %}</p>
+          {% else %}
+            <p class="muted">Summary coming soon.</p>
+          {% endif %}
+          <div>
+            <span class="badge">{{ episode.claim_count }} claims</span>
+            <a href="/episodes/{{ episode.id }}/review">Review findings →</a>
+          </div>
+        </article>
+      {% else %}
+        <p>No episodes have been summarised yet.</p>
+      {% endfor %}
+    </div>
+  </section>
+{% endblock %}
