@@ -768,6 +768,7 @@ class FakeDatabase:
 
             rows = list(self.tables["job_queue"])
             param_index = 0
+            normalized_query = normalized
 
             extended_columns = ", result" in normalized_query
 
@@ -1046,22 +1047,34 @@ class FakeDatabase:
 
         if table == "job":
             processed.setdefault("status", "queued")
-            processed.setdefault("payload", {})
+
+            payload_value = processed.get("payload")
+            if isinstance(payload_value, str):
+                try:
+                    processed["payload"] = json.loads(payload_value)
+                except json.JSONDecodeError:
+                    processed["payload"] = payload_value
+            elif isinstance(payload_value, dict):
+                processed["payload"] = dict(payload_value)
+            elif payload_value is None:
+                processed["payload"] = {}
+
             processed.setdefault("result", None)
             processed.setdefault("error", None)
-            processed.setdefault("created_at", self._tick())
-            processed.setdefault("updated_at", processed.get("created_at"))
-            processed.setdefault("priority", 0)
             processed.setdefault("fingerprint", None)
             processed.setdefault("attempts", 0)
             processed.setdefault("max_attempts", 3)
             processed.setdefault("run_at", None)
 
+            if "created_at" in processed:
+                created_at = processed["created_at"]
+            else:
+                created_at = self._tick()
+                processed["created_at"] = created_at
+            processed.setdefault("updated_at", created_at)
 
+            processed["priority"] = int(processed.get("priority", 0) or 0)
             processed.setdefault("last_error", None)
-            processed.setdefault("result", None)
-            processed.setdefault("created_at", self._tick())
-            processed.setdefault("updated_at", processed.get("created_at"))
             processed.setdefault("started_at", None)
             processed.setdefault("finished_at", None)
 
