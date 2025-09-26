@@ -6,7 +6,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Callable, Iterable, List, Sequence
 
 from sumy.nlp.tokenizers import Tokenizer
 from sumy.parsers.plaintext import PlaintextParser
@@ -141,13 +141,18 @@ def summarize_episode(
     episode_id: int,
     *,
     refresh: bool = False,
+    progress_callback: Callable[[int, int, chunker.ChunkRecord | None], None] | None = None,
 ) -> SummaryResult:
     chunk_data = chunker.ensure_chunks_for_episode(conn, episode_id, refresh=refresh)
     if chunk_data is None:
         raise ValueError(f"No transcript available for episode {episode_id}")
 
     all_points: List[str] = []
-    for chunk in chunk_data.chunks:
+    total_chunks = len(chunk_data.chunks)
+    if progress_callback is not None:
+        progress_callback(0, total_chunks, None)
+
+    for index, chunk in enumerate(chunk_data.chunks, start=1):
         desired = max(3, min(7, math.ceil(chunk.token_count / 400)))
         points = _summarize_chunk_text(chunk.text, desired)
         if points:
@@ -155,6 +160,8 @@ def summarize_episode(
             all_points.extend(points)
         else:
             chunker.update_chunk_key_points(conn, chunk.id, [])
+        if progress_callback is not None:
+            progress_callback(index, total_chunks, chunk)
 
     deduped = _dedupe_points(all_points)
     if not deduped:

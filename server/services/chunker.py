@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -42,6 +43,7 @@ class ChunkRecord(ChunkData):
     id: int
     transcript_id: int
     key_points: str | None = None
+    source_hash: str | None = None
 
 
 @dataclass
@@ -123,14 +125,24 @@ def _fetch_transcript(conn, episode_id: int) -> TranscriptRecord | None:
     return transcript
 
 
-def _count_existing_chunks(conn, transcript_id: int) -> int:
+def _compute_transcript_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _fetch_existing_chunk_state(conn, transcript_id: int) -> tuple[int, str | None]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT COUNT(*) FROM transcript_chunk WHERE transcript_id = %s",
+            "SELECT COUNT(*), MIN(source_hash) FROM transcript_chunk WHERE transcript_id = %s",
             (transcript_id,),
         )
         row = cur.fetchone()
-    return int(row[0] if row else 0)
+    if not row:
+        return 0, None
+    count = int(row[0] or 0)
+    stored_hash = row[1]
+    if stored_hash in (None, ""):
+        stored_hash = None
+    return count, stored_hash
 
 
 def _persist_chunks(
@@ -143,6 +155,7 @@ def _persist_chunks(
 ) -> List[ChunkData]:
     tokens = _tokenize(text)
     chunk_data = _build_chunks(tokens, max_tokens=max_tokens, overlap_ratio=overlap_ratio)
+    transcript_hash = _compute_transcript_hash(text)
 
     with conn.cursor() as cur:
         cur.execute("DELETE FROM transcript_chunk WHERE transcript_id = %s", (transcript_id,))
@@ -150,9 +163,9 @@ def _persist_chunks(
             cur.execute(
                 """
                 INSERT INTO transcript_chunk (
-                    transcript_id, chunk_index, token_start, token_end, token_count, text
+                    transcript_id, chunk_index, token_start, token_end, token_count, text, source_hash
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     transcript_id,
@@ -161,6 +174,7 @@ def _persist_chunks(
                     chunk.token_end,
                     chunk.token_count,
                     chunk.text,
+                    transcript_hash,
                 ),
             )
 
@@ -172,7 +186,7 @@ def fetch_chunks(conn, transcript_id: int) -> List[ChunkRecord]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points
+            SELECT id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points, source_hash
             FROM transcript_chunk
             WHERE transcript_id = %s
             ORDER BY chunk_index
@@ -193,6 +207,7 @@ def fetch_chunks(conn, transcript_id: int) -> List[ChunkRecord]:
                 token_count=row[5],
                 text=row[6],
                 key_points=row[7],
+                source_hash=row[8] if len(row) > 8 else None,
             )
         )
     return chunks
@@ -210,7 +225,9 @@ def ensure_chunks_for_episode(
     if transcript is None:
         return None
 
-    needs_refresh = refresh or _count_existing_chunks(conn, transcript.id) == 0
+    chunk_count, stored_hash = _fetch_existing_chunk_state(conn, transcript.id)
+    transcript_hash = _compute_transcript_hash(transcript.text)
+    needs_refresh = refresh or chunk_count == 0 or stored_hash != transcript_hash
     if needs_refresh:
         _persist_chunks(
             conn,
