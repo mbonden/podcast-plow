@@ -48,6 +48,7 @@ export default function ClaimCard({ claim, showEpisodeLink = true, episodeId, ep
   const resolvedEpisodeId = episodeId ?? (isTopicClaim(claim) ? claim.episode_id : undefined);
   const resolvedEpisodeTitle =
     episodeTitle ?? (isTopicClaim(claim) ? claim.episode_title : isClaimDetail(claim) ? claim.episode_title : undefined);
+  const citations = isClaimDetail(claim) ? claim.evidence : [];
 
   return (
     <Card>
@@ -70,6 +71,22 @@ export default function ClaimCard({ claim, showEpisodeLink = true, episodeId, ep
           <p>
             <span className="font-medium text-foreground">Rationale:</span> {claim.grade_rationale}
           </p>
+        )}
+        {citations.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Citations</p>
+            <ul className="mt-1 space-y-1 text-sm text-muted-foreground">
+              {citations.slice(0, 3).map((item) => (
+                <li key={item.id} className="list-inside list-disc">
+                  <span className="text-foreground">{item.title}</span>
+                  {item.year ? ` (${item.year})` : ""}
+                </li>
+              ))}
+              {citations.length > 3 && (
+                <li className="text-xs text-muted-foreground">+ {citations.length - 3} more source(s)</li>
+              )}
+            </ul>
+          </div>
         )}
       </CardContent>
       <CardFooter className="flex flex-wrap items-center gap-2">
