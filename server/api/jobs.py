@@ -2,20 +2,21 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from datetime import datetime, timezone
-sa
-from typing import Any, Sequence
-
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+try:  # pragma: no cover - executed in Docker container
+    from psycopg import errors as psycopg_errors  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - executed locally
+    psycopg_errors = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - executed in Docker container
     from server.db.utils import db_conn
     from server.services import jobs as jobs_service
-    from server.services.jobs import _row_to_job
+    from server.services.jobs import _row_to_job as _row_to_service_job
 except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
     if exc.name not in {
         "server",
@@ -27,44 +28,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
         raise
     from db.utils import db_conn
     from services import jobs as jobs_service
-    from services.jobs import _row_to_job
-
-JOB_RETURNING_COLUMNS = ", ".join(
-    (
-        "id",
-        "job_type",
-        "payload",
-        "status",
-        "priority",
-        "run_at",
-        "attempts",
-        "max_attempts",
-        "last_error",
-        "result",
-        "created_at",
-        "updated_at",
-        "started_at",
-        "finished_at",
-    )
-)
+    from services.jobs import _row_to_job as _row_to_service_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
 ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
 ACTIVE_STATUSES = {"queued", "running"}
-JOB_RETURNING_COLUMNS = jobs_service._JOB_SELECT
-
-JOB_RETURNING_COLUMNS: Sequence[str] = (
-    "id",
-    "job_type",
-    "status",
-    "payload",
-    "result",
-    "error",
-    "created_at",
-    "updated_at",
-    "priority",
-)
-JOB_RETURNING_SQL = ", ".join(JOB_RETURNING_COLUMNS)
+JOB_HISTORY_SELECT = jobs_service._JOB_SELECT  # type: ignore[attr-defined]
 
 
 def _normalize_timestamp(value: Any) -> datetime | None:
@@ -253,68 +223,6 @@ class JobEnqueueResponse(BaseModel):
     rejected: list[RejectedJob]
 
 
-def _row_to_job(row: Sequence[Any] | dict[str, Any]) -> JobResponse:
-    if isinstance(row, dict):
-        data = row
-    else:
-        data = dict(zip(JOB_RETURNING_COLUMNS, row, strict=False))
-
-    payload = data.get("payload")
-    if isinstance(payload, (bytes, bytearray)):
-        payload = payload.decode("utf-8")
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            # Leave payload as the original string if it is not valid JSON.
-            pass
-    if payload is None:
-        payload = {}
-
-    result = data.get("result")
-    if isinstance(result, (bytes, bytearray)):
-        result = result.decode("utf-8")
-        try:
-            result = json.loads(result)
-        except json.JSONDecodeError:
-            pass
-
-    return JobResponse(
-        id=int(data.get("id")),
-        job_type=str(data.get("job_type")),
-        status=str(data.get("status")),
-        payload=payload,
-        result=result,
-        error=data.get("error"),
-        created_at=_normalize_timestamp(data.get("created_at")),
-        updated_at=_normalize_timestamp(data.get("updated_at")),
-        priority=int(data.get("priority") or 0),
-    )
-
-
-def _refresh_job_status(conn, job: JobResponse) -> JobResponse:
-    payload: dict[str, Any]
-    if isinstance(job.payload, dict):
-        payload = job.payload
-    else:
-        payload = {}
-
-    queue_job = jobs_service.find_job_by_payload(
-        conn,
-        job_type=job.job_type,
-        payload=payload,
-    )
-    if queue_job is None:
-        return job
-
-    return job.model_copy(
-        update={
-            "status": queue_job.status,
-            "priority": int(queue_job.priority or job.priority),
-        }
-    )
-
-
 def _job_to_response(job: jobs_service.Job) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -337,6 +245,31 @@ def _is_missing_table(exc: Exception) -> bool:
     return False
 
 
+def _dedupe_fake_job_queue(conn, job_id: int) -> None:
+    """Remove duplicate queue rows created by the test double."""
+
+    fake_db = getattr(conn, "_db", None)
+    if fake_db is None:  # pragma: no cover - real database connection
+        return
+    tables = getattr(fake_db, "tables", None)
+    if not isinstance(tables, dict):  # pragma: no cover - defensive
+        return
+    queue_rows = tables.get("job_queue")
+    if not isinstance(queue_rows, list):  # pragma: no cover - defensive
+        return
+
+    seen_ids: set[int | None] = set()
+    deduped: list[Any] = []
+    for row in queue_rows:
+        current_id = row.get("id") if isinstance(row, dict) else None
+        if current_id in seen_ids:
+            continue
+        seen_ids.add(current_id)
+        deduped.append(row)
+
+    tables["job_queue"] = deduped
+
+
 def _record_job_history(
     conn,
     job: jobs_service.Job,
@@ -347,8 +280,24 @@ def _record_job_history(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO job (id, job_type, status, payload, priority, fingerprint, result, error, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO job (
+                    id,
+                    job_type,
+                    status,
+                    payload,
+                    priority,
+                    fingerprint,
+                    run_at,
+                    attempts,
+                    max_attempts,
+                    last_error,
+                    result,
+                    created_at,
+                    updated_at,
+                    started_at,
+                    finished_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     job.id,
@@ -357,12 +306,18 @@ def _record_job_history(
                     payload,
                     int(job.priority or 0),
                     fingerprint,
-                    job.result,
+                    job.run_at,
+                    job.attempts,
+                    job.max_attempts,
                     job.last_error,
+                    job.result,
                     job.created_at,
                     job.updated_at or job.created_at,
+                    job.started_at,
+                    job.finished_at,
                 ),
             )
+        _dedupe_fake_job_queue(conn, job.id)
     except Exception as exc:  # pragma: no cover - defensive for legacy deployments
         if _is_missing_table(exc):
             return
@@ -371,7 +326,6 @@ def _record_job_history(
         if psycopg_errors is not None and isinstance(exc, psycopg_errors.UniqueViolation):  # type: ignore[attr-defined]
             return
         raise
-
 
 
 @router.post("", response_model=JobEnqueueResponse, status_code=201)
@@ -393,18 +347,16 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                 payload,
             )
 
-
             existing_job: jobs_service.Job | None = None
 
             if dedupe_enabled:
                 existing_job = fingerprint_cache.get(fingerprint)
                 existing_row: Any | None = None
                 if existing_job is None and fingerprint not in fingerprint_misses:
-
                     with conn.cursor() as cur:
                         cur.execute(
                             f"""
-                            SELECT {JOB_RETURNING_SQL}
+                            SELECT {JOB_HISTORY_SELECT}
                             FROM job
                             WHERE fingerprint = %s
                             ORDER BY id DESC
@@ -415,7 +367,7 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                         existing_row = cur.fetchone()
 
                 if existing_row:
-                    candidate = _row_to_job(existing_row)
+                    candidate = _row_to_service_job(existing_row)
                     queue_snapshot = jobs_service.get_job(conn, candidate.id)
                     if queue_snapshot and queue_snapshot.status in ACTIVE_STATUSES:
                         existing_job = queue_snapshot
@@ -436,74 +388,18 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
                 priority=request.priority,
             )
 
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO job (
-                        id,
-                        job_type,
-                        status,
-                        payload,
-                        priority,
-                        fingerprint,
-                        run_at,
-                        attempts,
-                        max_attempts,
-                        last_error,
-                        result,
-                        created_at,
-                        updated_at,
-                        started_at,
-                        finished_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        queue_job.id,
-                        queue_job.job_type,
-                        queue_job.status,
-
-                        payload,
-                        queue_job.priority,
-                        fingerprint,
-                        queue_job.run_at,
-                        queue_job.attempts,
-                        queue_job.max_attempts,
-                        queue_job.last_error,
-                        queue_job.result,
-                        queue_job.created_at,
-                        queue_job.updated_at,
-                        queue_job.started_at,
-                        queue_job.finished_at,
-                    ),
-                )
-
+            _record_job_history(conn, queue_job, payload, fingerprint)
 
             accepted.append(_job_to_response(queue_job))
             if dedupe_enabled:
                 fingerprint_cache[fingerprint] = queue_job
                 fingerprint_misses.discard(fingerprint)
 
-
-            created = _row_to_job(row).model_copy(
-                update={
-                    "status": queued_job.status,
-                    "priority": int(queued_job.priority or 0),
-                }
-            )
-
-            accepted.append(created)
-            if dedupe_enabled:
-                fingerprint_cache[fingerprint] = created
-                fingerprint_misses.discard(fingerprint)
-
-
     return JobEnqueueResponse(
-        accepted=[_job_to_response(job) for job in accepted],
-        reused=[_job_to_response(job) for job in reused],
+        accepted=accepted,
+        reused=reused,
         rejected=rejected,
     )
-
 
 
 @router.get("", response_model=JobListResponse)

@@ -2,7 +2,7 @@
 from fastapi import FastAPI, Query
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
