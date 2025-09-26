@@ -11,6 +11,7 @@ from db.utils import db_conn
 from ingest import feeds as feeds_module
 from ingest import summaries as summaries_module
 from ingest import transcripts as transcripts_module
+from ingest import youtube as youtube_module
 from services import claims as claims_service
 from services import jobs as jobs_service
 from services import grader as grader_service
@@ -320,6 +321,16 @@ def fetch_transcripts(
 
     inserted = transcripts_module.fetch_transcripts(limit)
     typer.echo(f"Stored transcripts for {inserted} episodes.")
+
+
+@app.command("discover-youtube")
+def discover_youtube(
+    limit: Optional[int] = typer.Option(100, "--limit", "-l", min=1, help="Only scan the most recent N episodes"),
+) -> None:
+    """Populate missing YouTube URLs using show notes heuristics."""
+
+    updated = youtube_module.discover_youtube_urls(limit)
+    typer.echo(f"Found YouTube URLs for {updated} episodes.")
 
 
 @app.command()
