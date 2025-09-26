@@ -184,6 +184,9 @@ def test_claim_endpoints_return_seed_data(seeded_client: TestClient) -> None:
 
     assert claim["grade"] == "moderate"
     assert any(evidence["stance"] == "supports" for evidence in claim["evidence"])
+    assert claim["evidence"]
+    assert all("is_primary" in evidence for evidence in claim["evidence"])
+    assert claim["evidence"][0]["is_primary"] is True
 
     topic_resp = seeded_client.get("/topics/ketones/claims")
     assert topic_resp.status_code == 200

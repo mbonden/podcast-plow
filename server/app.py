@@ -1,4 +1,6 @@
 
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
 from fastapi import FastAPI, Query
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,79 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.db import db_connection  # IMPORTANT: import from /app root
+
+
+EvidenceRow = Dict[str, Any]
+
+_EVIDENCE_TYPE_PRIORITY: Dict[str, int] = {
+    "meta-analysis": 0,
+    "systematic review": 0,
+    "rct": 1,
+    "observational": 2,
+    "mechanistic": 3,
+}
+_DEFAULT_EVIDENCE_PRIORITY = 4
+
+
+def _evidence_priority(evidence_type: Optional[str]) -> int:
+    if not evidence_type:
+        return _DEFAULT_EVIDENCE_PRIORITY
+    return _EVIDENCE_TYPE_PRIORITY.get(evidence_type.lower(), _DEFAULT_EVIDENCE_PRIORITY)
+
+
+def _normalize_identifier(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def _evidence_dedupe_key(item: EvidenceRow) -> Optional[Tuple[str, str]]:
+    doi = _normalize_identifier(item.get("doi"))
+    if doi:
+        return ("doi", doi)
+    pubmed_id = _normalize_identifier(item.get("pubmed_id"))
+    if pubmed_id:
+        return ("pubmed_id", pubmed_id)
+    return None
+
+
+def _evidence_sort_key(item: EvidenceRow) -> Tuple[int, float, int]:
+    priority = _evidence_priority(item.get("type"))
+    raw_year = item.get("year")
+    year_value: Optional[int] = None
+    if isinstance(raw_year, (int, float)):
+        year_value = int(raw_year)
+    elif isinstance(raw_year, str):
+        stripped = raw_year.strip()
+        if stripped.isdigit():
+            year_value = int(stripped)
+    year_sort = -float(year_value) if year_value is not None else float("inf")
+    return (priority, year_sort, int(item.get("id", 0)))
+
+
+def _prepare_evidence(items: Iterable[EvidenceRow]) -> List[EvidenceRow]:
+    deduped: Dict[Tuple[str, str], EvidenceRow] = {}
+    passthrough: List[EvidenceRow] = []
+    for item in items:
+        # Copy the item so we can safely annotate it later.
+        record = dict(item)
+        key = _evidence_dedupe_key(record)
+        if key is None:
+            passthrough.append(record)
+            continue
+        existing = deduped.get(key)
+        if existing is None or _evidence_sort_key(record) < _evidence_sort_key(existing):
+            deduped[key] = record
+
+    ordered = list(deduped.values()) + passthrough
+    ordered.sort(key=_evidence_sort_key)
+    ordered = ordered[:6]
+
+    for record in ordered:
+        record["is_primary"] = False
+    for index in range(min(2, len(ordered))):
+        ordered[index]["is_primary"] = True
+    return ordered
 
 try:  # pragma: no cover - exercised in Docker container
     from server.api.jobs import router as jobs_router
@@ -843,13 +918,20 @@ def get_claim(claim_id: int):
             WHERE ce.claim_id = %s
             ORDER BY es.year DESC NULLS LAST
         """, (claim_id,))
-        evidence = []
+        raw_evidence: List[EvidenceRow] = []
         for e_row in cur.fetchall():
-            evidence.append({
-                "id": e_row[0], "title": e_row[1], "year": e_row[2], "type": e_row[3],
-                "journal": e_row[4], "doi": e_row[5], "pubmed_id": e_row[6],
-                "url": e_row[7], "stance": e_row[8]
+            raw_evidence.append({
+                "id": e_row[0],
+                "title": e_row[1],
+                "year": e_row[2],
+                "type": e_row[3],
+                "journal": e_row[4],
+                "doi": e_row[5],
+                "pubmed_id": e_row[6],
+                "url": e_row[7],
+                "stance": e_row[8],
             })
+        evidence = _prepare_evidence(raw_evidence)
         return {
             "claim_id": r[0],
             "episode_title": r[1],
