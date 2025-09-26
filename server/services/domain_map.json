@@ -1,0 +1,11 @@
+{
+  "metabolism": ["metabolic", "metabolic health"],
+  "nutrition": ["diet", "dietary", "nutritional science"],
+  "wellness": ["general wellness", "holistic health"],
+  "performance": ["athletic performance", "exercise performance"],
+  "neuro": ["neurology", "brain health", "neuroscience"],
+  "endocrinology": ["endocrine", "hormone health"],
+  "sleep": ["sleep", "sleep health"],
+  "neurochemistry": ["neuro chemistry", "brain chemistry"],
+  "nutrition_support": ["nutritional support"]
+}

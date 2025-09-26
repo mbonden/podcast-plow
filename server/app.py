@@ -23,6 +23,13 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
         raise
     from ui import router as ui_router, templates as ui_templates
 
+try:  # pragma: no cover - exercised in Docker container
+    from server.services.normalization import canonical_topic
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised locally
+    if exc.name not in {"server", "server.services", "server.services.normalization"}:
+        raise
+    from services.normalization import canonical_topic
+
 
 
 app = FastAPI(title="podcast-plow API", version="0.1.0")
@@ -782,6 +789,7 @@ def get_episode_outline(episode_id: int):
 
 @app.get("/topics/{topic}/claims")
 def get_topic_claims(topic: str):
+    normalized_topic = canonical_topic(topic)
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -797,7 +805,7 @@ def get_topic_claims(topic: str):
             LEFT JOIN latest_grade lg ON lg.claim_id = c.id
             WHERE c.topic = %s
             ORDER BY e.published_at DESC NULLS LAST, e.id DESC, c.start_ms NULLS LAST
-        """, (topic,))
+        """, (normalized_topic,))
         items = []
         for r in cur.fetchall():
             items.append({
@@ -813,7 +821,7 @@ def get_topic_claims(topic: str):
                 "grade": r[9],
                 "grade_rationale": r[10],
             })
-        return {"topic": topic, "claims": items}
+        return {"topic": normalized_topic, "claims": items}
 
 @app.get("/claims/{claim_id}")
 def get_claim(claim_id: int):
