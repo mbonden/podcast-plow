@@ -76,8 +76,8 @@ def link_evidence(
             )
         )
         if not rows:
-            typer.echo("No claims found for provided filters.")
-            raise typer.Exit(code=1)
+            typer.echo("No claims found for provided filters. Nothing to do.")
+            return
 
         processed = 0
         for claim_id, normalized, raw in rows:
