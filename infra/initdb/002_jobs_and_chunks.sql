@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS job_queue (
   status TEXT NOT NULL DEFAULT 'queued',
   priority INT NOT NULL DEFAULT 0,
   run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  next_run_at TIMESTAMPTZ,
   attempts INT NOT NULL DEFAULT 0,
   max_attempts INT NOT NULL DEFAULT 3,
   last_error TEXT,
@@ -25,15 +26,17 @@ CREATE INDEX IF NOT EXISTS idx_job_queue_status_priority_run_at
 CREATE TABLE IF NOT EXISTS transcript_chunk (
   id SERIAL PRIMARY KEY,
   transcript_id INT REFERENCES transcript(id) ON DELETE CASCADE,
-  start_ms INT,
-  end_ms INT,
-  text TEXT,
-  tokens INT,
-  embedding vector(768)
+  chunk_index INT NOT NULL,
+  token_start INT NOT NULL,
+  token_end INT NOT NULL,
+  token_count INT NOT NULL,
+  text TEXT NOT NULL,
+  key_points JSONB,
+  source_hash TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_transcript_chunk_transcript_id_start_ms
-  ON transcript_chunk (transcript_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_transcript_chunk_transcript_id_chunk_index
+  ON transcript_chunk (transcript_id, chunk_index);
 
 -- Episode outlines allow summarising sections of an episode
 CREATE TABLE IF NOT EXISTS episode_outline (

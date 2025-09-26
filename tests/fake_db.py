@@ -488,6 +488,20 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
+            "select count(*), min(source_hash) from transcript_chunk where transcript_id = %s"
+        ):
+            transcript_id = params[0]
+            rows = [
+                row
+                for row in self.tables["transcript_chunk"]
+                if row.get("transcript_id") == transcript_id
+            ]
+            count = len(rows)
+            hashes = [row.get("source_hash") for row in rows if row.get("source_hash")]
+            stored_hash = hashes[0] if hashes else None
+            return [(count, stored_hash)]
+
+        if normalized.startswith(
             "select count(*) from transcript_chunk where transcript_id = %s"
         ):
             transcript_id = params[0]
@@ -516,8 +530,8 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
-            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points from transcript_chunk where transcript_id = %s"
-        ):
+            "select id, transcript_id, chunk_index, token_start, token_end, token_count, text, key_points"
+        ) and "from transcript_chunk" in normalized:
             transcript_id = params[0]
             rows = [
                 row
@@ -535,6 +549,7 @@ class FakeDatabase:
                     row.get("token_count"),
                     row.get("text"),
                     row.get("key_points"),
+                    row.get("source_hash"),
                 )
                 for row in rows
             ]
@@ -606,7 +621,7 @@ class FakeDatabase:
 
 
         if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
+            "select id, job_type, payload, status, priority, run_at"
         ) and "from job_queue" in normalized:
             select_clause, _, _ = normalized.partition(" from ")
             column_names = [
@@ -749,7 +764,7 @@ class FakeDatabase:
 
         if normalized.startswith(
 
-            "select id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error"
+            "select id, job_type, payload, status, priority, run_at"
         ) and "from job" in normalized:
             normalized_query = normalized
             select_clause, _, _ = normalized_query.partition(" from ")
@@ -848,14 +863,16 @@ class FakeDatabase:
 
 
         if normalized.startswith(
-            "update job_queue set status = %s, attempts = attempts + 1, started_at = now(), updated_at = now() where id = %s"
-        ):
+            "update job_queue set status = %s, attempts = attempts + 1"
+        ) and "from job_queue" not in normalized:
             status, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
             row["attempts"] = int(row.get("attempts", 0) or 0) + 1
+            if "next_run_at = null" in normalized:
+                row["next_run_at"] = None
 
             row["started_at"] = self._tick()
             row["updated_at"] = self._tick()
@@ -868,8 +885,8 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
-            "update job_queue set status = %s, finished_at = now(), last_error = null, updated_at = now() where id = %s"
-        ):
+            "update job_queue set status = %s, finished_at = now()"
+        ) and "from job_queue" not in normalized and "last_error = %s" not in normalized:
             status, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
@@ -878,6 +895,8 @@ class FakeDatabase:
             row["finished_at"] = self._tick()
             row["last_error"] = None
             row["updated_at"] = self._tick()
+            if "next_run_at = null" in normalized:
+                row["next_run_at"] = None
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
@@ -887,8 +906,8 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
-            "update job_queue set status = %s, finished_at = now(), last_error = %s, updated_at = now() where id = %s"
-        ):
+            "update job_queue set status = %s, finished_at = now(), last_error = %s"
+        ) and "from job_queue" not in normalized:
             status, error, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
@@ -897,6 +916,8 @@ class FakeDatabase:
             row["finished_at"] = self._tick()
             row["last_error"] = error
             row["updated_at"] = self._tick()
+            if "next_run_at = null" in normalized:
+                row["next_run_at"] = None
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
@@ -906,14 +927,20 @@ class FakeDatabase:
             return []
 
         if normalized.startswith(
-            "update job_queue set status = %s, run_at = %s, last_error = %s, started_at = null, finished_at = null, updated_at = now() where id = %s"
-        ):
-            status, run_at, error, job_id = params
+            "update job_queue set status = %s, run_at = %s"
+        ) and "from job_queue" not in normalized:
+            status = params[0]
+            run_at = params[1]
+            next_run_at = params[2] if "next_run_at" in normalized else None
+            error = params[3 if next_run_at is not None else 2]
+            job_id = params[4 if next_run_at is not None else 3]
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
             row["run_at"] = run_at
+            if next_run_at is not None:
+                row["next_run_at"] = next_run_at
             row["last_error"] = error
             row["started_at"] = None
             row["finished_at"] = None
@@ -922,9 +949,32 @@ class FakeDatabase:
             if job_row:
                 job_row["status"] = row["status"]
                 job_row["run_at"] = run_at
+                if next_run_at is not None:
+                    job_row["next_run_at"] = next_run_at
                 job_row["last_error"] = error
                 job_row["started_at"] = None
                 job_row["finished_at"] = None
+                job_row["updated_at"] = row["updated_at"]
+            return []
+
+        if normalized.startswith(
+            "update job_queue set result = %s, updated_at = now() where id = %s"
+        ):
+            result_value, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            if isinstance(result_value, str):
+                try:
+                    row["result"] = json.loads(result_value)
+                except json.JSONDecodeError:
+                    row["result"] = result_value
+            else:
+                row["result"] = result_value
+            row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["result"] = row["result"]
                 job_row["updated_at"] = row["updated_at"]
             return []
 
@@ -990,6 +1040,10 @@ class FakeDatabase:
             processed["priority"] = int(processed.get("priority", 0) or 0)
             processed["attempts"] = int(processed.get("attempts", 0) or 0)
             processed["max_attempts"] = int(processed.get("max_attempts", 3) or 3)
+            if "run_at" not in processed:
+                processed["run_at"] = None
+            processed.setdefault("next_run_at", processed.get("run_at"))
+            processed.setdefault("result", None)
 
 
         if table == "job":
@@ -1010,6 +1064,7 @@ class FakeDatabase:
             processed.setdefault("priority", 0)
             processed.setdefault("fingerprint", None)
             processed.setdefault("run_at", None)
+            processed.setdefault("next_run_at", processed.get("run_at"))
             processed.setdefault("attempts", 0)
             processed.setdefault("max_attempts", 3)
             processed.setdefault("last_error", None)
@@ -1028,6 +1083,7 @@ class FakeDatabase:
                 "status": processed.get("status"),
                 "priority": processed.get("priority"),
                 "run_at": processed.get("run_at"),
+                "next_run_at": processed.get("next_run_at"),
                 "attempts": processed.get("attempts", 0),
                 "max_attempts": processed.get("max_attempts", 3),
                 "last_error": processed.get("last_error"),
@@ -1041,6 +1097,7 @@ class FakeDatabase:
 
         if table == "transcript_chunk":
             processed.setdefault("key_points", None)
+            processed.setdefault("source_hash", None)
 
         self.tables[table].append(processed)
         return processed

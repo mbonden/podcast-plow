@@ -29,6 +29,7 @@ $$;
 ALTER TABLE job_queue
     ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb,
     ADD COLUMN IF NOT EXISTS run_at TIMESTAMPTZ DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS max_attempts INT NOT NULL DEFAULT 3,
     ADD COLUMN IF NOT EXISTS result JSONB,
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now(),
@@ -62,6 +63,7 @@ SET
     max_attempts = COALESCE(max_attempts, 3),
     status = COALESCE(status, 'queued'),
     run_at = COALESCE(run_at, created_at, now()),
+    next_run_at = COALESCE(next_run_at, run_at),
     created_at = COALESCE(created_at, now()),
     updated_at = COALESCE(updated_at, created_at, now());
 

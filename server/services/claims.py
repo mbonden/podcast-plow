@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Callable, Dict, Iterable, List, Sequence
 
 from worker.claim_extraction import MS_PER_WORD, Claim as ExtractedClaim, extract_claims
 
@@ -52,9 +52,13 @@ def _adjust_bounds(claim: ExtractedClaim, *, token_start: int) -> ClaimCandidate
     )
 
 
-def _aggregate_candidates(chunks: Sequence[chunker.ChunkRecord]) -> Dict[str, ClaimCandidate]:
+def _aggregate_candidates(
+    chunks: Sequence[chunker.ChunkRecord],
+    progress_callback: Callable[[int, int, chunker.ChunkRecord], None] | None = None,
+) -> Dict[str, ClaimCandidate]:
     aggregated: Dict[str, ClaimCandidate] = {}
-    for chunk in chunks:
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
         chunk_claims = extract_claims(chunk.text)
         for claim in chunk_claims:
             if not claim.normalized_text:
@@ -64,6 +68,8 @@ def _aggregate_candidates(chunks: Sequence[chunker.ChunkRecord]) -> Dict[str, Cl
             existing = aggregated.get(key)
             if existing is None or candidate.start_ms < existing.start_ms:
                 aggregated[key] = candidate
+        if progress_callback is not None:
+            progress_callback(index, total, chunk)
     return aggregated
 
 
@@ -104,6 +110,7 @@ def extract_episode_claims(
     episode_id: int,
     *,
     refresh: bool = False,
+    progress_callback: Callable[[int, int, chunker.ChunkRecord | None], None] | None = None,
 ) -> List[StoredClaim]:
     """Populate deterministic claims for *episode_id*.
 
@@ -114,7 +121,18 @@ def extract_episode_claims(
     if chunk_data is None:
         raise ValueError(f"No transcript available for episode {episode_id}")
 
-    aggregated = _aggregate_candidates(chunk_data.chunks)
+    total_chunks = len(chunk_data.chunks)
+    if progress_callback is not None:
+        progress_callback(0, total_chunks, None)
+
+    aggregated = _aggregate_candidates(
+        chunk_data.chunks,
+        progress_callback=(
+            lambda index, total, chunk: progress_callback(index, total, chunk)
+            if progress_callback is not None
+            else None
+        ),
+    )
     if not aggregated:
         logger.info("No claims detected for episode %s", episode_id)
 

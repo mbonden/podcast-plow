@@ -16,6 +16,7 @@ if str(SERVER_ROOT) not in sys.path:
 from tests.fake_db import FakeConnection, FakeDatabase
 
 import server.services.claims as claims_service
+import server.services.chunker as chunker_service
 
 
 @pytest.fixture(scope="module")
@@ -83,3 +84,30 @@ def test_extract_claims_is_idempotent(seeded_conn: Tuple[FakeConnection, FakeDat
     assert len(after) == len(before)
     assert {row["id"] for row in after} == {row["id"] for row in before}
     assert len({row["normalized_text"] for row in after}) == len(after)
+
+
+def test_chunker_reuses_chunks_when_transcript_unchanged(
+    seeded_conn: Tuple[FakeConnection, FakeDatabase]
+) -> None:
+    conn, db = seeded_conn
+    episode_id = 1
+
+    first = chunker_service.ensure_chunks_for_episode(conn, episode_id, refresh=True)
+    assert first is not None
+
+    initial_rows = [row for row in db.tables["transcript_chunk"] if row["transcript_id"] == first.transcript.id]
+    assert initial_rows, "expected chunks to be created"
+    hashes = {row.get("source_hash") for row in initial_rows}
+    assert len(hashes - {None}) == 1
+
+    chunker_service.ensure_chunks_for_episode(conn, episode_id, refresh=False)
+    second_rows = [row for row in db.tables["transcript_chunk"] if row["transcript_id"] == first.transcript.id]
+    assert [row["id"] for row in second_rows] == [row["id"] for row in initial_rows]
+
+    transcript_row = next(row for row in db.tables["transcript"] if row["episode_id"] == episode_id)
+    transcript_row["text"] = (transcript_row["text"] or "") + " extra"
+    transcript_row["word_count"] = len((transcript_row["text"] or "").split())
+
+    chunker_service.ensure_chunks_for_episode(conn, episode_id, refresh=False)
+    updated_rows = [row for row in db.tables["transcript_chunk"] if row["transcript_id"] == first.transcript.id]
+    assert [row["id"] for row in updated_rows] != [row["id"] for row in initial_rows]

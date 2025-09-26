@@ -87,7 +87,23 @@ def _process_job(conn, job: jobs_service.Job) -> None:
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
             raise ValueError(f"Invalid episode_id value {episode_id!r}") from exc
         refresh_flag = bool(job.payload.get("refresh", False))
-        summarize_service.summarize_episode(conn, episode_int, refresh=refresh_flag)
+        summarize_service.summarize_episode(
+            conn,
+            episode_int,
+            refresh=refresh_flag,
+            progress_callback=lambda completed, total, chunk: jobs_service.update_job_progress(
+                conn,
+                job.id,
+                total_chunks=total,
+                completed_chunks=completed,
+                current_chunk=None if chunk is None else chunk.chunk_index,
+                message=(
+                    f"Summarizing chunk {completed}/{total}"
+                    if total and completed
+                    else "Summarizing transcript"
+                ),
+            ),
+        )
         return
 
     if job.job_type == "extract_claims":
@@ -99,7 +115,23 @@ def _process_job(conn, job: jobs_service.Job) -> None:
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive guard
             raise ValueError(f"Invalid episode_id value {episode_id!r}") from exc
         refresh_flag = bool(job.payload.get("refresh", False))
-        claims_service.extract_episode_claims(conn, episode_int, refresh=refresh_flag)
+        claims_service.extract_episode_claims(
+            conn,
+            episode_int,
+            refresh=refresh_flag,
+            progress_callback=lambda completed, total, chunk: jobs_service.update_job_progress(
+                conn,
+                job.id,
+                total_chunks=total,
+                completed_chunks=completed,
+                current_chunk=None if chunk is None else chunk.chunk_index,
+                message=(
+                    f"Extracting chunk {completed}/{total}"
+                    if total and completed
+                    else "Extracting claims"
+                ),
+            ),
+        )
         return
 
     if job.job_type == "auto_grade":

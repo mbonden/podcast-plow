@@ -71,6 +71,10 @@ class JobResponse(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     priority: int = 0
+    run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    attempts: int = 0
+    max_attempts: int = 0
 
     @field_validator("status", mode="before")
     @classmethod
@@ -95,6 +99,17 @@ class JobResponse(BaseModel):
             return int(value)
         except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
             raise TypeError("priority must be an integer") from exc
+
+    @field_validator("attempts", "max_attempts", mode="before")
+    @classmethod
+    def _coerce_attempts(cls, value: Any) -> int:
+        if value in (None, ""):
+            return 0
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise TypeError("attempts must be numeric") from exc
+        return max(0, parsed)
 
 
 class JobListResponse(BaseModel):
@@ -234,6 +249,10 @@ def _job_to_response(job: jobs_service.Job) -> JobResponse:
         created_at=_normalize_timestamp(job.created_at),
         updated_at=_normalize_timestamp(job.updated_at),
         priority=int(job.priority or 0),
+        run_at=_normalize_timestamp(job.run_at),
+        next_run_at=_normalize_timestamp(job.next_run_at),
+        attempts=int(job.attempts or 0),
+        max_attempts=int(job.max_attempts or 0),
     )
 
 

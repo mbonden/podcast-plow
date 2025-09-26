@@ -6,10 +6,25 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
+import random
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+
+def _load_default_max_attempts() -> int:
+    value = os.getenv("JOB_QUEUE_MAX_ATTEMPTS", "3")
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.debug("Invalid JOB_QUEUE_MAX_ATTEMPTS value %s; defaulting to 3", value)
+        return 3
+    return max(1, parsed)
+
+
+DEFAULT_MAX_ATTEMPTS = _load_default_max_attempts()
 
 UTC = dt.timezone.utc
 
@@ -20,6 +35,7 @@ _JOB_COLUMNS = (
     "status",
     "priority",
     "run_at",
+    "next_run_at",
     "attempts",
     "max_attempts",
     "last_error",
@@ -43,6 +59,7 @@ class Job:
     status: str
     priority: int
     run_at: dt.datetime
+    next_run_at: dt.datetime | None
     attempts: int
     max_attempts: int
     last_error: Optional[str] = None
@@ -112,6 +129,22 @@ def _serialize_payload(payload: Dict[str, Any]) -> str:
         return json.dumps({}, sort_keys=True)
 
 
+def _compute_backoff_delay(job: Job, backoff_seconds: int | None = None) -> int:
+    if backoff_seconds is not None:
+        try:
+            base = int(backoff_seconds)
+        except (TypeError, ValueError):
+            base = 0
+    else:
+        base = job.attempts * 60
+    base = max(30, min(base, 3600))
+    jitter_low = base * 0.8
+    jitter_high = base * 1.2
+    delay = random.uniform(jitter_low, jitter_high)
+    clamped = max(30, min(int(round(delay)), 3600))
+    return clamped
+
+
 def _row_to_job(row: Any) -> Job:
     if isinstance(row, dict):
         data = row
@@ -121,6 +154,7 @@ def _row_to_job(row: Any) -> Job:
     created_at = _ensure_optional_datetime(data.get("created_at"))
     updated_at = _ensure_optional_datetime(data.get("updated_at"))
     run_at = _ensure_datetime(data.get("run_at"), default=created_at)
+    next_run_at = _ensure_optional_datetime(data.get("next_run_at"))
 
     return Job(
         id=int(data.get("id")),
@@ -129,6 +163,7 @@ def _row_to_job(row: Any) -> Job:
         status=str(data.get("status")),
         priority=int(data.get("priority") or 0),
         run_at=run_at,
+        next_run_at=next_run_at,
         attempts=int(data.get("attempts") or 0),
         max_attempts=int(data.get("max_attempts") or 0),
         last_error=data.get("last_error"),
@@ -166,16 +201,19 @@ def enqueue_job(
     *,
     priority: int = 0,
     run_at: dt.datetime | None = None,
-    max_attempts: int = 3,
+    max_attempts: int | None = None,
 ) -> Job:
     payload = payload or {}
     run_at = _ensure_datetime(run_at, default=dt.datetime.now(tz=UTC))
+    effective_max_attempts = max_attempts if max_attempts is not None else DEFAULT_MAX_ATTEMPTS
+    if effective_max_attempts <= 0:
+        effective_max_attempts = DEFAULT_MAX_ATTEMPTS
     serialized_payload = _serialize_payload(payload)
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO job_queue (job_type, payload, priority, run_at, max_attempts)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO job_queue (job_type, payload, priority, run_at, next_run_at, max_attempts)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING
                 id,
                 job_type,
@@ -183,6 +221,7 @@ def enqueue_job(
                 status,
                 priority,
                 run_at,
+                next_run_at,
                 attempts,
                 max_attempts,
                 last_error,
@@ -192,7 +231,14 @@ def enqueue_job(
                 started_at,
                 finished_at
             """,
-            (job_type, serialized_payload, priority, run_at, max_attempts),
+            (
+                job_type,
+                serialized_payload,
+                priority,
+                run_at,
+                run_at,
+                effective_max_attempts,
+            ),
         )
         row = cur.fetchone()
     job = _row_to_job(row)
@@ -239,6 +285,7 @@ def dequeue_job(conn, job_types: Sequence[str] | None = None) -> Job | None:
             UPDATE job_queue
             SET status = %s,
                 attempts = attempts + 1,
+                next_run_at = NULL,
                 started_at = now(),
                 updated_at = now()
             WHERE id = %s
@@ -247,6 +294,7 @@ def dequeue_job(conn, job_types: Sequence[str] | None = None) -> Job | None:
         )
     job.status = "running"
     job.attempts += 1
+    job.next_run_at = None
     return job
 
 
@@ -258,6 +306,7 @@ def mark_job_done(conn, job_id: int) -> None:
             SET status = %s,
                 finished_at = now(),
                 last_error = NULL,
+                next_run_at = NULL,
                 updated_at = now()
             WHERE id = %s
             """,
@@ -285,39 +334,95 @@ def mark_job_failed(
                 SET status = %s,
                     finished_at = now(),
                     last_error = %s,
+                    next_run_at = NULL,
                     updated_at = now()
                 WHERE id = %s
                 """,
                 ("failed", message or None, job.id),
             )
         logger.warning("Job %s permanently failed after %s attempts", job.id, job.attempts)
+        job.status = "failed"
+        job.finished_at = dt.datetime.now(tz=UTC)
+        job.next_run_at = None
         return
 
-    if backoff_seconds is None:
-        backoff_seconds = min(3600, max(30, job.attempts * 60))
-    next_run = dt.datetime.now(tz=UTC) + dt.timedelta(seconds=backoff_seconds)
+    delay_seconds = _compute_backoff_delay(job, backoff_seconds)
+    next_run = dt.datetime.now(tz=UTC) + dt.timedelta(seconds=delay_seconds)
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE job_queue
             SET status = %s,
                 run_at = %s,
+                next_run_at = %s,
                 last_error = %s,
                 started_at = NULL,
                 finished_at = NULL,
                 updated_at = now()
             WHERE id = %s
             """,
-            ("queued", next_run, message or None, job.id),
+            ("queued", next_run, next_run, message or None, job.id),
         )
     job.status = "queued"
     job.run_at = next_run
+    job.next_run_at = next_run
     logger.info(
         "Job %s requeued after failure (attempt %s/%s)",
         job.id,
         job.attempts,
         job.max_attempts,
     )
+
+
+def update_job_progress(
+    conn,
+    job_id: int,
+    *,
+    total_chunks: int,
+    completed_chunks: int,
+    current_chunk: int | None = None,
+    message: str | None = None,
+) -> None:
+    total = max(int(total_chunks), 0)
+    completed = int(completed_chunks)
+    if total > 0:
+        completed = max(0, min(completed, total))
+    else:
+        completed = max(0, completed)
+
+    current_value: int | None = None
+    if current_chunk is not None:
+        try:
+            current_value = int(current_chunk)
+        except (TypeError, ValueError):
+            current_value = None
+
+    percent = 0.0
+    if total > 0:
+        percent = min(1.0, completed / total)
+
+    progress_payload: Dict[str, Any] = {
+        "total_chunks": total,
+        "completed_chunks": completed,
+        "current_chunk": current_value,
+        "percent_complete": round(percent, 4),
+        "updated_at": dt.datetime.now(tz=UTC).isoformat(),
+    }
+    cleaned_message = (message or "").strip()
+    if cleaned_message:
+        progress_payload["message"] = cleaned_message
+
+    serialized = _serialize_payload(progress_payload)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE job_queue
+            SET result = %s,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (serialized, job_id),
+        )
 
 
 def list_jobs(
@@ -332,12 +437,7 @@ def list_jobs(
 
     params: list[Any] = []
 
-    sql = (
-        """
-        SELECT id, job_type, payload, status, priority, run_at, attempts, max_attempts, last_error
-        FROM job_queue
-        """
-    )
+    sql = f"SELECT {_JOB_SELECT} FROM job_queue"
     filters: list[str] = []
 
     if status is not None:
@@ -451,6 +551,7 @@ __all__ = [
     "dequeue_job",
     "mark_job_done",
     "mark_job_failed",
+    "update_job_progress",
     "list_jobs",
     "get_job",
     "find_job_by_payload",
