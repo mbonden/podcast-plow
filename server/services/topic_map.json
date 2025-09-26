@@ -1,0 +1,12 @@
+{
+  "ketones": ["ketone", "ketones", "bhb", "beta-hydroxybutyrate"],
+  "intermittent_fasting": ["fasting", "intermittent fasting", "time-restricted eating"],
+  "sleep_quality": ["sleep", "sleep quality", "sleep hygiene"],
+  "general_health": ["general health", "overall health", "health"],
+  "creatine": ["creatine", "creatine monohydrate"],
+  "omega_3": ["omega 3", "omega-3", "fish oil"],
+  "stress_hormones": ["cortisol", "stress"],
+  "gut_microbiome": ["microbiome", "gut health"],
+  "hydration": ["hydration", "fluid balance"],
+  "circadian_rhythm": ["circadian", "circadian rhythm", "body clock"]
+}

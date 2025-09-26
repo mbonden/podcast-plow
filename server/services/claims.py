@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Sequence
 from worker.claim_extraction import MS_PER_WORD, Claim as ExtractedClaim, extract_claims
 
 from . import chunker
+from .normalization import canonical_domain, canonical_topic
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,8 @@ def _adjust_bounds(claim: ExtractedClaim, *, token_start: int) -> ClaimCandidate
     return ClaimCandidate(
         raw_text=claim.raw_text,
         normalized_text=claim.normalized_text.strip(),
-        topic=claim.topic,
-        domain=claim.domain,
+        topic=canonical_topic(claim.topic),
+        domain=canonical_domain(claim.domain),
         risk_level=claim.risk_level,
         start_ms=start,
         end_ms=end,
