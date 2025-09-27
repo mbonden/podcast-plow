@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
     volumes:
       - ../server:/app
+      - ../worker:/app/worker
     ports:
       - "8000:8000"
 
@@ -52,8 +53,10 @@ services:
     working_dir: /workspace
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
+      PYTHONPATH: /app:/app/worker
     volumes:
       - ../server:/app
+      - ../worker:/app/worker
       - ..:/workspace
       # mount feeds.txt read-only inside the container at /infra/feeds.txt
       - ./feeds.txt:/infra/feeds.txt:ro
