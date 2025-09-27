@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
 import typer
 
-from db.utils import db_conn
-from ingest import feeds as feeds_module
-from ingest import summaries as summaries_module
-from ingest import transcripts as transcripts_module
-from ingest import youtube as youtube_module
-from services import claims as claims_service
-from services import jobs as jobs_service
-from services import grader as grader_service
-from services import summarize as summarize_service
+PACKAGE_ROOT = Path(__file__).resolve().parent
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from server.db.utils import db_conn
+from server.ingest import feeds as feeds_module
+from server.ingest import summaries as summaries_module
+from server.ingest import transcripts as transcripts_module
+from server.ingest import youtube as youtube_module
+from server.services import claims as claims_service
+from server.services import jobs as jobs_service
+from server.services import grader as grader_service
+from server.services import summarize as summarize_service
 
 logger = logging.getLogger(__name__)
 
