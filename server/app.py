@@ -295,7 +295,7 @@ ADMIN_JOBS_PAGE = """
         color: #38bdf8;
       }
 
-      .status-done {
+      .status-finished {
         background: rgba(52, 211, 153, 0.2);
         color: var(--success);
       }
@@ -393,7 +393,7 @@ ADMIN_JOBS_PAGE = """
                 <option value=\"\">All</option>
                 <option value=\"queued\">Queued</option>
                 <option value=\"running\">Running</option>
-                <option value=\"done\">Done</option>
+                <option value=\"finished\">Finished</option>
                 <option value=\"failed\">Failed</option>
               </select>
             </label>

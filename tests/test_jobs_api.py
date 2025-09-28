@@ -255,7 +255,7 @@ def test_get_job_returns_latest_status(client: TestClient) -> None:
 
     done_detail = client.get(f"/jobs/{job_id}")
     assert done_detail.status_code == 200
-    assert done_detail.json()["status"] == "done"
+    assert done_detail.json()["status"] == "finished"
 
 
 def test_list_jobs_supports_filters_and_limit(
@@ -287,11 +287,11 @@ def test_list_jobs_supports_filters_and_limit(
     with app_module.db_conn() as conn:
         jobs_service.mark_job_done(conn, second["id"])
 
-    list_resp = client.get("/jobs?status=done&type=grade&limit=1")
+    list_resp = client.get("/jobs?status=finished&type=grade&limit=1")
     assert list_resp.status_code == 200
     data = list_resp.json()
     assert data["count"] == 1
-    assert all(job["status"] == "done" for job in data["jobs"])
+    assert all(job["status"] == "finished" for job in data["jobs"])
     assert data["jobs"][0]["id"] == second["id"]
     assert data["jobs"][0]["job_type"] == "grade"
 

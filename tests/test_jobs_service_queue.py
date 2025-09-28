@@ -142,9 +142,12 @@ def test_update_job_progress_records_payload() -> None:
         stored = jobs_service.get_job(conn, job.id)
 
     assert stored is not None
-    assert isinstance(stored.result, dict)
-    assert stored.result["total_chunks"] == 5
-    assert stored.result["completed_chunks"] == 2
-    assert stored.result["current_chunk"] == 1
-    assert stored.result["percent_complete"] == pytest.approx(0.4)
-    assert stored.result.get("message") == "Processing"
+    payload = stored.payload or {}
+    assert isinstance(payload, dict)
+    progress = payload.get("progress", {})
+    assert isinstance(progress, dict)
+    assert progress["total_chunks"] == 5
+    assert progress["completed_chunks"] == 2
+    assert progress["current_chunk"] == 1
+    assert progress["percent_complete"] == pytest.approx(0.4)
+    assert progress.get("message") == "Processing"

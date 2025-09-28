@@ -18,6 +18,15 @@ Check health:
 curl http://localhost:8000/healthz
 ```
 
+## Dev quickstart
+
+With the containers running you can use the bundled helpers:
+
+```bash
+make enqueue-latest N=5   # queue summarize jobs for the latest episodes
+make work MAX=10          # run the worker loop against the queue
+```
+
 Auto-grade all claims (creates versioned `claim_grade` rows):
 ```
 python -m worker.auto_grade

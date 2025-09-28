@@ -32,7 +32,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - executed locally
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-ALLOWED_STATUSES = {"queued", "running", "failed", "done"}
+ALLOWED_STATUSES = {"queued", "running", "failed", "finished"}
 ACTIVE_STATUSES = {"queued", "running"}
 JOB_HISTORY_SELECT = jobs_service._JOB_SELECT  # type: ignore[attr-defined]
 
@@ -239,13 +239,14 @@ class JobEnqueueResponse(BaseModel):
 
 
 def _job_to_response(job: jobs_service.Job) -> JobResponse:
+    progress = job.payload.get("progress") if isinstance(job.payload, dict) else None
     return JobResponse(
         id=job.id,
         job_type=job.job_type,
         status=job.status,
         payload=job.payload,
-        result=job.result,
-        error=job.last_error,
+        result=progress,
+        error=job.error,
         created_at=_normalize_timestamp(job.created_at),
         updated_at=_normalize_timestamp(job.updated_at),
         priority=int(job.priority or 0),
@@ -295,6 +296,7 @@ def _record_job_history(
     payload: dict[str, Any],
     fingerprint: str,
 ) -> None:
+    progress = job.payload.get("progress") if isinstance(job.payload, dict) else None
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -328,8 +330,8 @@ def _record_job_history(
                     job.run_at,
                     job.attempts,
                     job.max_attempts,
-                    job.last_error,
-                    job.result,
+                    job.error,
+                    progress,
                     job.created_at,
                     job.updated_at or job.created_at,
                     job.started_at,
@@ -425,7 +427,7 @@ def enqueue_jobs(request: JobCreateRequest) -> JobEnqueueResponse:
 def list_jobs(
     status: str | None = Query(
         None,
-        description="Filter jobs by status (queued, running, failed, done)",
+        description="Filter jobs by status (queued, running, failed, finished)",
     ),
     job_type: str | None = Query(
         None,

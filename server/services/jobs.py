@@ -31,17 +31,15 @@ UTC = dt.timezone.utc
 _JOB_COLUMNS = (
     "id",
     "job_type",
-    "payload",
+    "payload_json",
     "status",
     "priority",
     "run_at",
     "next_run_at",
     "attempts",
     "max_attempts",
-    "last_error",
-    "result",
+    "error",
     "created_at",
-    "updated_at",
     "started_at",
     "finished_at",
 )
@@ -62,12 +60,18 @@ class Job:
     next_run_at: dt.datetime | None
     attempts: int
     max_attempts: int
-    last_error: Optional[str] = None
-    result: Any = None
+    error: Optional[str] = None
     created_at: dt.datetime | None = None
-    updated_at: dt.datetime | None = None
     started_at: dt.datetime | None = None
     finished_at: dt.datetime | None = None
+
+    @property
+    def updated_at(self) -> dt.datetime | None:
+        timestamps = [self.created_at, self.started_at, self.finished_at]
+        values = [value for value in timestamps if value is not None]
+        if not values:
+            return None
+        return max(values)
 
 
 def _ensure_datetime(value: Any, *, default: dt.datetime | None = None) -> dt.datetime:
@@ -106,21 +110,6 @@ def _parse_payload(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def _parse_result(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (dict, list)):
-        return value
-    if isinstance(value, bytes):
-        value = value.decode("utf-8")
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            logger.debug("Unable to decode result JSON; returning raw value")
-    return value
-
-
 def _serialize_payload(payload: Dict[str, Any]) -> str:
     try:
         return json.dumps(payload, sort_keys=True)
@@ -152,26 +141,25 @@ def _row_to_job(row: Any) -> Job:
         data = dict(zip(_JOB_COLUMNS, row, strict=False))
 
     created_at = _ensure_optional_datetime(data.get("created_at"))
-    updated_at = _ensure_optional_datetime(data.get("updated_at"))
     run_at = _ensure_datetime(data.get("run_at"), default=created_at)
     next_run_at = _ensure_optional_datetime(data.get("next_run_at"))
+    started_at = _ensure_optional_datetime(data.get("started_at"))
+    finished_at = _ensure_optional_datetime(data.get("finished_at"))
 
     return Job(
         id=int(data.get("id")),
         job_type=str(data.get("job_type")),
-        payload=_parse_payload(data.get("payload")),
+        payload=_parse_payload(data.get("payload_json")),
         status=str(data.get("status")),
         priority=int(data.get("priority") or 0),
         run_at=run_at,
         next_run_at=next_run_at,
         attempts=int(data.get("attempts") or 0),
         max_attempts=int(data.get("max_attempts") or 0),
-        last_error=data.get("last_error"),
-        result=_parse_result(data.get("result")),
+        error=data.get("error"),
         created_at=created_at,
-        updated_at=updated_at,
-        started_at=_ensure_optional_datetime(data.get("started_at")),
-        finished_at=_ensure_optional_datetime(data.get("finished_at")),
+        started_at=started_at,
+        finished_at=finished_at,
     )
 
 
@@ -212,22 +200,20 @@ def enqueue_job(
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO job_queue (job_type, payload, priority, run_at, next_run_at, max_attempts)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO job_queue (job_type, payload_json, priority, run_at, next_run_at, max_attempts)
+            VALUES (%s, %s::jsonb, %s, %s, %s, %s)
             RETURNING
                 id,
                 job_type,
-                payload,
+                payload_json,
                 status,
                 priority,
                 run_at,
                 next_run_at,
                 attempts,
                 max_attempts,
-                last_error,
-                result,
+                error,
                 created_at,
-                updated_at,
                 started_at,
                 finished_at
             """,
@@ -281,36 +267,20 @@ def dequeue_job(conn, job_types: Sequence[str] | None = None) -> Job | None:
     job = _row_to_job(row)
     with conn.cursor() as cur:
         cur.execute(
-            """
-            UPDATE job_queue
-            SET status = %s,
-                attempts = attempts + 1,
-                next_run_at = NULL,
-                started_at = now(),
-                updated_at = now()
-            WHERE id = %s
-            """,
+            "UPDATE job_queue SET status = %s, started_at = now() WHERE id = %s",
             ("running", job.id),
         )
     job.status = "running"
-    job.attempts += 1
     job.next_run_at = None
+    job.started_at = dt.datetime.now(tz=UTC)
     return job
 
 
 def mark_job_done(conn, job_id: int) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            """
-            UPDATE job_queue
-            SET status = %s,
-                finished_at = now(),
-                last_error = NULL,
-                next_run_at = NULL,
-                updated_at = now()
-            WHERE id = %s
-            """,
-            ("done", job_id),
+            "UPDATE job_queue SET status = %s, finished_at = now(), error = NULL WHERE id = %s",
+            ("finished", job_id),
         )
     logger.info("Job %s completed", job_id)
 
@@ -326,24 +296,18 @@ def mark_job_failed(
     if len(message) > 2000:
         message = message[:2000]
 
-    if job.attempts >= job.max_attempts:
+    next_attempt = job.attempts + 1
+    if next_attempt >= job.max_attempts:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                UPDATE job_queue
-                SET status = %s,
-                    finished_at = now(),
-                    last_error = %s,
-                    next_run_at = NULL,
-                    updated_at = now()
-                WHERE id = %s
-                """,
+                "UPDATE job_queue SET status = %s, finished_at = now(), error = %s WHERE id = %s",
                 ("failed", message or None, job.id),
             )
         logger.warning("Job %s permanently failed after %s attempts", job.id, job.attempts)
         job.status = "failed"
         job.finished_at = dt.datetime.now(tz=UTC)
         job.next_run_at = None
+        job.error = message or None
         return
 
     delay_seconds = _compute_backoff_delay(job, backoff_seconds)
@@ -355,10 +319,10 @@ def mark_job_failed(
             SET status = %s,
                 run_at = %s,
                 next_run_at = %s,
-                last_error = %s,
+                error = %s,
                 started_at = NULL,
                 finished_at = NULL,
-                updated_at = now()
+                attempts = attempts + 1
             WHERE id = %s
             """,
             ("queued", next_run, next_run, message or None, job.id),
@@ -366,6 +330,8 @@ def mark_job_failed(
     job.status = "queued"
     job.run_at = next_run
     job.next_run_at = next_run
+    job.attempts = next_attempt
+    job.error = message or None
     logger.info(
         "Job %s requeued after failure (attempt %s/%s)",
         job.id,
@@ -412,13 +378,12 @@ def update_job_progress(
     if cleaned_message:
         progress_payload["message"] = cleaned_message
 
-    serialized = _serialize_payload(progress_payload)
+    serialized = _serialize_payload({"progress": progress_payload})
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE job_queue
-            SET result = %s,
-                updated_at = now()
+            SET payload_json = COALESCE(payload_json, '{}'::jsonb) || %s::jsonb
             WHERE id = %s
             """,
             (serialized, job_id),
@@ -493,7 +458,7 @@ def find_job_by_payload(
             f"""
             SELECT {_JOB_SELECT}
             FROM job_queue
-            WHERE job_type = %s AND payload::jsonb = %s::jsonb
+            WHERE job_type = %s AND payload_json = %s::jsonb
             ORDER BY id DESC
             LIMIT 1
             """,
