@@ -1,0 +1,39 @@
+# .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  smoke:
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Docker is preinstalled; ensure compose plugin exists
+      - name: Check Docker & Compose
+        run: |
+          docker --version
+          if ! docker compose version >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          fi
+          docker info
+
+      - name: Run smoke
+        env:
+          SMOKE_TEARDOWN: "1"   # bring containers down after
+          SMOKE_DEBUG: "1"      # optional verbose logs
+        run: bash scripts/smoke.sh
