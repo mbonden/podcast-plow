@@ -2,10 +2,68 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
+import pathlib
+import sys
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+import click
 import typer
+
+
+def _extend_sys_path(paths: Iterable[pathlib.Path]) -> None:
+    for path in paths:
+        if not path.exists():
+            continue
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.append(path_str)
+
+
+ROOT = pathlib.Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+_extend_sys_path([PROJECT_ROOT, PROJECT_ROOT / "server", PROJECT_ROOT / "worker"])
+
+WORKSPACE_ROOT = pathlib.Path("/workspace")
+if WORKSPACE_ROOT.exists():
+    _extend_sys_path([WORKSPACE_ROOT, WORKSPACE_ROOT / "server", WORKSPACE_ROOT / "worker"])
+
+
+def _patch_typer_metavar_behavior() -> None:
+    argument_sig = inspect.signature(typer.core.TyperArgument.make_metavar)
+    if "ctx" not in argument_sig.parameters:
+        original_argument_make_metavar = typer.core.TyperArgument.make_metavar
+
+        def _argument_make_metavar(self, ctx=None):  # type: ignore[override]
+            return original_argument_make_metavar(self)
+
+        typer.core.TyperArgument.make_metavar = _argument_make_metavar  # type: ignore[assignment]
+
+    option_sig = inspect.signature(typer.core.TyperOption.make_metavar)
+    if "ctx" in option_sig.parameters:
+        original_option_make_metavar = typer.core.TyperOption.make_metavar
+
+        def _option_make_metavar(self, ctx=None):  # type: ignore[override]
+            if ctx is None:
+                ctx = click.Context(click.Command(self.name or ""))
+            return original_option_make_metavar(self, ctx)
+
+        typer.core.TyperOption.make_metavar = _option_make_metavar  # type: ignore[assignment]
+
+    parameter_sig = inspect.signature(click.core.Parameter.make_metavar)
+    if "ctx" in parameter_sig.parameters:
+        original_parameter_make_metavar = click.core.Parameter.make_metavar
+
+        def _parameter_make_metavar(self, ctx=None):  # type: ignore[override]
+            if ctx is None:
+                ctx = click.Context(click.Command(self.name or ""))
+            return original_parameter_make_metavar(self, ctx)
+
+        click.core.Parameter.make_metavar = _parameter_make_metavar  # type: ignore[assignment]
+
+
+_patch_typer_metavar_behavior()
 
 from server.db.utils import db_conn
 from server.services.evidence import EvidenceService, iter_claim_rows

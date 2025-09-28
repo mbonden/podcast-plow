@@ -7,16 +7,70 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
+import click
+import inspect
+
 import typer
 
 ROOT = pathlib.Path(__file__).resolve().parent
-for path in {ROOT, ROOT / "server", ROOT / "worker"}:
-    sys.path.append(str(path))
+PROJECT_ROOT = ROOT.parent
+
+
+def _extend_sys_path(paths: Iterable[pathlib.Path]) -> None:
+    for path in paths:
+        if not path.exists():
+            continue
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.append(path_str)
+
+
+_extend_sys_path([PROJECT_ROOT, PROJECT_ROOT / "server", PROJECT_ROOT / "worker"])
+
+
+def _patch_typer_metavar_behavior() -> None:
+    """Make Typer compatible with newer Click metavar hooks."""
+
+    # Click 8.2 started passing ``ctx`` to ``make_metavar``. Typer gained support
+    # for this but some environments still ship an older signature. Guard the
+    # behavior so we work regardless of the installed combination.
+    argument_sig = inspect.signature(typer.core.TyperArgument.make_metavar)
+    if "ctx" not in argument_sig.parameters:
+        original_argument_make_metavar = typer.core.TyperArgument.make_metavar
+
+        def _argument_make_metavar(self, ctx=None):  # type: ignore[override]
+            return original_argument_make_metavar(self)
+
+        typer.core.TyperArgument.make_metavar = _argument_make_metavar  # type: ignore[assignment]
+
+    option_sig = inspect.signature(typer.core.TyperOption.make_metavar)
+    if "ctx" in option_sig.parameters:
+        original_option_make_metavar = typer.core.TyperOption.make_metavar
+
+        def _option_make_metavar(self, ctx=None):  # type: ignore[override]
+            if ctx is None:
+                ctx = click.Context(click.Command(self.name or ""))
+            return original_option_make_metavar(self, ctx)
+
+        typer.core.TyperOption.make_metavar = _option_make_metavar  # type: ignore[assignment]
+
+    parameter_sig = inspect.signature(click.core.Parameter.make_metavar)
+    if "ctx" in parameter_sig.parameters:
+        original_parameter_make_metavar = click.core.Parameter.make_metavar
+
+        def _parameter_make_metavar(self, ctx=None):  # type: ignore[override]
+            if ctx is None:
+                ctx = click.Context(click.Command(self.name or ""))
+            return original_parameter_make_metavar(self, ctx)
+
+        click.core.Parameter.make_metavar = _parameter_make_metavar  # type: ignore[assignment]
+
+
+_patch_typer_metavar_behavior()
 
 WORKSPACE_ROOT = pathlib.Path("/workspace")
 if WORKSPACE_ROOT.exists():
-    for path in {WORKSPACE_ROOT, WORKSPACE_ROOT / "server", WORKSPACE_ROOT / "worker"}:
-        sys.path.append(str(path))
+    _extend_sys_path([WORKSPACE_ROOT, WORKSPACE_ROOT / "server", WORKSPACE_ROOT / "worker"])
 
 from server.db.utils import db_conn
 from server.ingest import feeds as feeds_module
@@ -391,6 +445,7 @@ def work(
     job_types: List[str] = typer.Option(
         [],
         "--job-type",
+        "--type",
         "-t",
         help="Only process jobs matching the provided type. Use multiple --job-type options to allow more than one type.",
     ),
