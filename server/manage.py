@@ -157,9 +157,23 @@ def _process_job(conn, job: jobs_service.Job) -> None:
 
 @enqueue_app.command("summarize")
 def enqueue_summarize(
-    episode_ids: str = typer.Option(..., "--episode-ids", help="Comma separated list of episode ids"),
-    priority: int = typer.Option(0, "--priority", "-p", help="Higher numbers run before lower priority"),
-    refresh: bool = typer.Option(False, "--refresh", help="Regenerate transcript chunks before summarising"),
+    episode_ids: str = typer.Option(
+        ...,
+        "--episode-ids",
+        "-e",
+        help="Comma separated list of episode ids",
+    ),
+    priority: int = typer.Option(
+        0,
+        "--priority",
+        "-p",
+        help="Higher numbers run before lower priority",
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh/--no-refresh",
+        help="Regenerate transcript chunks before summarising",
+    ),
 ) -> None:
     ids = _parse_episode_ids(episode_ids)
     with db_conn() as conn:
@@ -175,9 +189,23 @@ def enqueue_summarize(
 
 @enqueue_app.command("extract-claims")
 def enqueue_extract_claims(
-    episode_ids: str = typer.Option(..., "--episode-ids", help="Comma separated list of episode ids"),
-    priority: int = typer.Option(0, "--priority", "-p", help="Higher numbers run before lower priority"),
-    refresh: bool = typer.Option(False, "--refresh", help="Rebuild transcript chunks before extracting"),
+    episode_ids: str = typer.Option(
+        ...,
+        "--episode-ids",
+        "-e",
+        help="Comma separated list of episode ids",
+    ),
+    priority: int = typer.Option(
+        0,
+        "--priority",
+        "-p",
+        help="Higher numbers run before lower priority",
+    ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh/--no-refresh",
+        help="Rebuild transcript chunks before extracting",
+    ),
 ) -> None:
     ids = _parse_episode_ids(episode_ids)
     with db_conn() as conn:
@@ -331,7 +359,13 @@ def list_jobs() -> None:
 
 
 @app.callback()
-def main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging")) -> None:
+def main(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose/--no-verbose",
+        help="Enable debug logging",
+    )
+) -> None:
     _configure_logging(verbose)
 
 
@@ -347,49 +381,41 @@ def discover(
 
 @jobs_app.command("work")
 def work(
-    once: bool = typer.Option(False, "--once", help="Process a single job and then exit"),
-    loop: bool = typer.Option(False, "--loop", help="Continuously poll for queued jobs"),
+    loop: bool = typer.Option(False, "--loop/--once", help="Continuously poll for queued jobs"),
     poll_interval: float = typer.Option(
         5.0,
         "--poll-interval",
+        "-i",
         help="Seconds to wait between polls when idle",
     ),
-    job_type: Optional[List[str]] = typer.Option(
-        None,
-        "--type",
+    job_types: List[str] = typer.Option(
+        [],
+        "--job-type",
         "-t",
-        help="Only process jobs matching the provided type. Use multiple --type options to allow more than one type.",
+        help="Only process jobs matching the provided type. Use multiple --job-type options to allow more than one type.",
     ),
     max_jobs: Optional[int] = typer.Option(
         None,
         "--max-jobs",
+        "-n",
         min=1,
         help="Maximum number of jobs to process before exiting",
     ),
 ) -> None:
-    if once and loop:
-        raise typer.BadParameter("Choose either --once or --loop, not both")
-
-    if not once and not loop:
-        once = True
-
     poll_interval = max(poll_interval, 0.1)
     should_loop = loop
 
     remaining: Optional[int]
-    if once:
-        remaining = 1
-        if max_jobs is not None:
-            remaining = min(remaining, max_jobs)
-    else:
+    if should_loop:
         remaining = max_jobs
+    else:
+        remaining = 1 if max_jobs is None else min(1, max_jobs)
 
-    job_types: List[str] = []
-    if job_type:
-        for entry in job_type:
-            cleaned = (entry or "").strip()
-            if cleaned:
-                job_types.append(cleaned)
+    job_type_filters: List[str] = []
+    for entry in job_types:
+        cleaned = (entry or "").strip()
+        if cleaned:
+            job_type_filters.append(cleaned)
 
     while True:
         if remaining is not None and remaining <= 0:
@@ -398,7 +424,7 @@ def work(
 
         job: jobs_service.Job | None
         with db_conn() as conn:
-            job = jobs_service.dequeue_job(conn, job_types=job_types or None)
+            job = jobs_service.dequeue_job(conn, job_types=job_type_filters or None)
             if job is None:
                 pass
             else:
@@ -452,7 +478,11 @@ def discover_youtube(
 @app.command()
 def summarize(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", min=1, help="Only summarise the most recent N episodes"),
-    refresh: bool = typer.Option(False, "--refresh", help="Replace any existing summaries"),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh/--no-refresh",
+        help="Replace any existing summaries",
+    ),
 ) -> None:
     """Generate heuristic TL;DR and narrative summaries for episodes."""
 
@@ -463,7 +493,11 @@ def summarize(
 @app.command("summarize-episode")
 def summarize_episode(
     episode_id: int = typer.Option(..., "--episode-id", "-e", help="Episode id to summarise"),
-    refresh: bool = typer.Option(False, "--refresh", help="Regenerate transcript chunks before summarising"),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh/--no-refresh",
+        help="Regenerate transcript chunks before summarising",
+    ),
 ) -> None:
     try:
         with db_conn() as conn:

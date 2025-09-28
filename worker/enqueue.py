@@ -29,7 +29,13 @@ def _parse_id_list(value: Optional[str]) -> List[int]:
 
 
 @app.callback()
-def main(verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging")) -> None:
+def main(
+    verbose: bool = typer.Option(
+        False,
+        "--verbose/--no-verbose",
+        help="Enable debug logging",
+    )
+) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s %(message)s")
 
@@ -55,7 +61,11 @@ def link_evidence(
     ),
     min_results: int = typer.Option(2, "--min-results", help="Minimum evidence per claim"),
     max_results: int = typer.Option(10, "--max-results", help="Maximum evidence to link"),
-    force: bool = typer.Option(False, "--force", help="Re-process even if evidence exists"),
+    force: bool = typer.Option(
+        False,
+        "--force/--no-force",
+        help="Re-process even if evidence exists",
+    ),
 ) -> None:
     claim_id_list = _parse_id_list(claim_ids)
     episode_id_list = _parse_id_list(episode_ids)
