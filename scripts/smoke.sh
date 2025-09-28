@@ -102,7 +102,7 @@ SQL
 # Quick health checks
 dc ps
 dc exec -T db psql -U postgres -d podcast_plow -c "SELECT 1;"
-dc exec -T ingest bash -lc "python /app/manage.py --help"
+dc exec -T ingest bash -lc "PYTHONPATH=/app:/workspace:/workspace/server:/workspace/worker python /app/manage.py --help >/dev/null"
 
 # Optionally enqueue one no-op-ish command just to prove command path is OK
 # (Comment out if you prefer not to touch data)
