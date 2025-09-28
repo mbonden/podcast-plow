@@ -225,7 +225,8 @@ def enqueue_summarize(
     ),
     refresh: bool = typer.Option(
         False,
-        "--refresh/--no-refresh",
+        "--refresh",
+        is_flag=True,
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
@@ -257,7 +258,8 @@ def enqueue_extract_claims(
     ),
     refresh: bool = typer.Option(
         False,
-        "--refresh/--no-refresh",
+        "--refresh",
+        is_flag=True,
         help="Rebuild transcript chunks before extracting",
     ),
 ) -> None:
@@ -318,7 +320,8 @@ def enqueue_summarize_latest(
     limit: int = typer.Option(5, "--limit", "-n", min=1, help="Number of episodes to enqueue"),
     refresh: bool = typer.Option(
         False,
-        "--refresh/--no-refresh",
+        "--refresh",
+        is_flag=True,
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
@@ -416,7 +419,8 @@ def list_jobs() -> None:
 def main(
     verbose: bool = typer.Option(
         False,
-        "--verbose/--no-verbose",
+        "--verbose",
+        is_flag=True,
         help="Enable debug logging",
     )
 ) -> None:
@@ -554,7 +558,8 @@ def summarize(
     limit: Optional[int] = typer.Option(None, "--limit", "-l", min=1, help="Only summarise the most recent N episodes"),
     refresh: bool = typer.Option(
         False,
-        "--refresh/--no-refresh",
+        "--refresh",
+        is_flag=True,
         help="Replace any existing summaries",
     ),
 ) -> None:
@@ -569,7 +574,8 @@ def summarize_episode(
     episode_id: int = typer.Option(..., "--episode-id", "-e", help="Episode id to summarise"),
     refresh: bool = typer.Option(
         False,
-        "--refresh/--no-refresh",
+        "--refresh",
+        is_flag=True,
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
