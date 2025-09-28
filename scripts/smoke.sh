@@ -68,6 +68,37 @@ dc up -d --build db ingest
 
 wait_for_postgres
 
+echo "[smoke] Ensuring job_queue has required columns…"
+dc exec -T db psql -U postgres -d podcast_plow <<'SQL'
+ALTER TABLE job_queue
+  ADD COLUMN IF NOT EXISTS payload       jsonb,
+  ADD COLUMN IF NOT EXISTS run_at        timestamptz DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS next_run_at   timestamptz,
+  ADD COLUMN IF NOT EXISTS max_attempts  integer DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS last_error    text,
+  ADD COLUMN IF NOT EXISTS result        text,
+  ADD COLUMN IF NOT EXISTS updated_at    timestamptz,
+  ADD COLUMN IF NOT EXISTS progress      integer DEFAULT 0;
+
+UPDATE job_queue SET payload = payload_json
+ WHERE payload IS NULL AND payload_json IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_job_queue_status_run_at
+    ON job_queue (status, run_at);
+
+CREATE OR REPLACE FUNCTION touch_job_queue_updated_at() RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_job_queue_updated_at ON job_queue;
+CREATE TRIGGER trg_job_queue_updated_at
+BEFORE UPDATE ON job_queue
+FOR EACH ROW EXECUTE FUNCTION touch_job_queue_updated_at();
+SQL
+
 # Quick health checks
 dc ps
 dc exec -T db psql -U postgres -d podcast_plow -c "SELECT 1;"
