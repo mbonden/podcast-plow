@@ -620,9 +620,12 @@ class FakeDatabase:
             return []
 
 
-        if normalized.startswith(
-            "select id, job_type, payload, status, priority, run_at"
-        ) and "from job_queue" in normalized:
+        select_prefixes = (
+            "select id, job_type, payload, status, priority, run_at",
+            "select id, job_type, payload_json, status, priority, run_at",
+        )
+
+        if any(normalized.startswith(prefix) for prefix in select_prefixes) and "from job_queue" in normalized:
             select_clause, _, _ = normalized.partition(" from ")
             column_names = [
                 column.strip()
@@ -695,7 +698,8 @@ class FakeDatabase:
                 param_index += 1
                 rows = [row for row in rows if row.get("job_type") == job_type]
 
-            if "payload::jsonb = %s::jsonb" in normalized:
+            payload_key = "payload_json" if "payload_json" in normalized else "payload"
+            if f"{payload_key}::jsonb = %s::jsonb" in normalized:
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):
@@ -706,9 +710,9 @@ class FakeDatabase:
                 else:
                     payload_filter = payload_value
                 rows = [
-                    row for row in rows if row.get("payload") == payload_filter
+                    row for row in rows if row.get(payload_key) == payload_filter
                 ]
-            elif "payload = %s" in normalized:
+            elif f"{payload_key} = %s" in normalized:
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):
@@ -719,7 +723,7 @@ class FakeDatabase:
                 else:
                     payload_filter = payload_value
                 rows = [
-                    row for row in rows if row.get("payload") == payload_filter
+                    row for row in rows if row.get(payload_key) == payload_filter
                 ]
 
             if "order by priority desc, run_at, id" in normalized:
@@ -762,10 +766,12 @@ class FakeDatabase:
                 for row in rows
             ]
 
-        if normalized.startswith(
+        job_select_prefixes = (
+            "select id, job_type, payload, status, priority, run_at",
+            "select id, job_type, payload_json, status, priority, run_at",
+        )
 
-            "select id, job_type, payload, status, priority, run_at"
-        ) and "from job" in normalized:
+        if any(normalized.startswith(prefix) for prefix in job_select_prefixes) and "from job" in normalized:
             normalized_query = normalized
             select_clause, _, _ = normalized_query.partition(" from ")
             column_names = [
@@ -808,8 +814,8 @@ class FakeDatabase:
                     row for row in rows if row.get("fingerprint") == fingerprint
                 ]
 
-            if "where payload = %s" in normalized_query or "and payload = %s" in normalized_query:
-
+            payload_key = "payload_json" if "payload_json" in normalized_query else "payload"
+            if f"{payload_key} = %s" in normalized_query:
                 payload_value = params[param_index]
                 param_index += 1
                 if isinstance(payload_value, str):
@@ -820,7 +826,7 @@ class FakeDatabase:
                 else:
                     payload_filter = payload_value
                 rows = [
-                    row for row in rows if row.get("payload") == payload_filter
+                    row for row in rows if row.get(payload_key) == payload_filter
                 ]
 
             if "order by priority desc" in normalized_query:
@@ -863,97 +869,126 @@ class FakeDatabase:
 
 
         if normalized.startswith(
-            "update job_queue set status = %s, attempts = attempts + 1"
-        ) and "from job_queue" not in normalized:
+            "update job_queue set status = %s, started_at = now() where id = %s"
+        ):
             status, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
-            row["attempts"] = int(row.get("attempts", 0) or 0) + 1
-            if "next_run_at = null" in normalized:
-                row["next_run_at"] = None
-
             row["started_at"] = self._tick()
+            row["next_run_at"] = None
             row["updated_at"] = self._tick()
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
-                job_row["attempts"] = row["attempts"]
                 job_row["started_at"] = row["started_at"]
                 job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
-            "update job_queue set status = %s, finished_at = now()"
-        ) and "from job_queue" not in normalized and "last_error = %s" not in normalized:
+            "update job_queue set status = %s, finished_at = now(), error = null"
+        ):
             status, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
             row["finished_at"] = self._tick()
+            row["error"] = None
             row["last_error"] = None
             row["updated_at"] = self._tick()
-            if "next_run_at = null" in normalized:
-                row["next_run_at"] = None
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
                 job_row["finished_at"] = row["finished_at"]
+                job_row["error"] = None
                 job_row["last_error"] = None
                 job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
-            "update job_queue set status = %s, finished_at = now(), last_error = %s"
-        ) and "from job_queue" not in normalized:
+            "update job_queue set status = %s, finished_at = now(), error = %s"
+        ):
             status, error, job_id = params
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
             row["finished_at"] = self._tick()
+            row["error"] = error
             row["last_error"] = error
             row["updated_at"] = self._tick()
-            if "next_run_at = null" in normalized:
-                row["next_run_at"] = None
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
                 job_row["finished_at"] = row["finished_at"]
+                job_row["error"] = error
                 job_row["last_error"] = error
                 job_row["updated_at"] = row["updated_at"]
             return []
 
         if normalized.startswith(
             "update job_queue set status = %s, run_at = %s"
-        ) and "from job_queue" not in normalized:
+        ) and "error = %s" in normalized:
             status = params[0]
             run_at = params[1]
-            next_run_at = params[2] if "next_run_at" in normalized else None
-            error = params[3 if next_run_at is not None else 2]
-            job_id = params[4 if next_run_at is not None else 3]
+            next_run_at = params[2]
+            error = params[3]
+            job_id = params[4]
             row = self._find_one("job_queue", job_id)
             if not row:
                 return []
             row["status"] = status
             row["run_at"] = run_at
-            if next_run_at is not None:
-                row["next_run_at"] = next_run_at
+            row["next_run_at"] = next_run_at
+            row["error"] = error
             row["last_error"] = error
             row["started_at"] = None
             row["finished_at"] = None
+            row["attempts"] = int(row.get("attempts", 0) or 0) + 1
             row["updated_at"] = self._tick()
             job_row = self._find_one("job", job_id)
             if job_row:
                 job_row["status"] = row["status"]
                 job_row["run_at"] = run_at
-                if next_run_at is not None:
-                    job_row["next_run_at"] = next_run_at
+                job_row["next_run_at"] = next_run_at
+                job_row["error"] = error
                 job_row["last_error"] = error
                 job_row["started_at"] = None
                 job_row["finished_at"] = None
+                job_row["attempts"] = row["attempts"]
+                job_row["updated_at"] = row["updated_at"]
+            return []
+
+        if normalized.startswith(
+            "update job_queue set payload_json = coalesce(payload_json, '{}'::jsonb) || %s::jsonb where id = %s"
+        ):
+            payload_value, job_id = params
+            row = self._find_one("job_queue", job_id)
+            if not row:
+                return []
+            if isinstance(payload_value, str):
+                try:
+                    payload_update = json.loads(payload_value)
+                except json.JSONDecodeError:
+                    payload_update = {}
+            elif isinstance(payload_value, dict):
+                payload_update = dict(payload_value)
+            else:
+                payload_update = {}
+            existing = row.get("payload_json") or {}
+            if not isinstance(existing, dict):
+                existing = {}
+            if isinstance(payload_update, dict):
+                existing.update(payload_update)
+            row["payload_json"] = existing
+            row["payload"] = dict(existing)
+            row["updated_at"] = self._tick()
+            job_row = self._find_one("job", job_id)
+            if job_row:
+                job_row["payload"] = dict(existing)
+                job_row["payload_json"] = dict(existing)
                 job_row["updated_at"] = row["updated_at"]
             return []
 
@@ -989,7 +1024,7 @@ class FakeDatabase:
         for row in rows:
             materialized: Dict[str, Any] = {}
             for key, value in row.items():
-                if value == "%s":
+                if isinstance(value, str) and "%s" in value:
                     try:
                         materialized[key] = next(param_iter)
                     except StopIteration:
@@ -1026,24 +1061,31 @@ class FakeDatabase:
 
         if table == "job_queue":
             processed.setdefault("status", "queued")
-            payload_value = processed.get("payload")
+
+            payload_value = processed.pop("payload_json", processed.get("payload"))
             if isinstance(payload_value, str):
                 try:
-                    processed["payload"] = json.loads(payload_value)
+                    payload_dict = json.loads(payload_value)
                 except json.JSONDecodeError:
-                    processed["payload"] = {}
+                    payload_dict = {}
             elif isinstance(payload_value, dict):
-                processed["payload"] = dict(payload_value)
+                payload_dict = dict(payload_value)
             else:
-                processed.setdefault("payload", {})
+                payload_dict = {}
+
+            processed["payload_json"] = payload_dict
+            processed["payload"] = dict(payload_dict)
 
             processed["priority"] = int(processed.get("priority", 0) or 0)
             processed["attempts"] = int(processed.get("attempts", 0) or 0)
             processed["max_attempts"] = int(processed.get("max_attempts", 3) or 3)
-            if "run_at" not in processed:
-                processed["run_at"] = None
+            processed.setdefault("run_at", None)
             processed.setdefault("next_run_at", processed.get("run_at"))
-            processed.setdefault("result", None)
+            processed.setdefault("error", None)
+            processed.setdefault("last_error", processed.get("error"))
+            processed.setdefault("created_at", self._tick())
+            processed.setdefault("started_at", None)
+            processed.setdefault("finished_at", None)
 
 
         if table == "job":
@@ -1060,6 +1102,8 @@ class FakeDatabase:
                 processed["payload"] = dict(payload_value)
             else:
                 processed.setdefault("payload", {})
+
+            processed.setdefault("payload_json", dict(processed.get("payload", {})))
 
             processed.setdefault("priority", 0)
             processed.setdefault("fingerprint", None)
@@ -1079,6 +1123,7 @@ class FakeDatabase:
             queue_entry = {
                 "id": processed.get("id"),
                 "job_type": processed.get("job_type"),
+                "payload_json": processed.get("payload"),
                 "payload": processed.get("payload"),
                 "status": processed.get("status"),
                 "priority": processed.get("priority"),
@@ -1086,10 +1131,9 @@ class FakeDatabase:
                 "next_run_at": processed.get("next_run_at"),
                 "attempts": processed.get("attempts", 0),
                 "max_attempts": processed.get("max_attempts", 3),
+                "error": processed.get("error"),
                 "last_error": processed.get("last_error"),
-                "result": processed.get("result"),
                 "created_at": processed.get("created_at"),
-                "updated_at": processed.get("updated_at"),
                 "started_at": processed.get("started_at"),
                 "finished_at": processed.get("finished_at"),
             }
