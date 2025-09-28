@@ -66,9 +66,14 @@ services:
     image: podcast-plow-server
     depends_on:
       - db
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/podcast_plow
     command: >
       bash -lc "PYTHONPATH=/app:/workspace:/workspace/server:/workspace/worker
                 python /app/manage.py jobs work --loop"
+    volumes:
+      - ../server:/app
+      - ../worker:/app/worker
 
 volumes:
   db_data:
