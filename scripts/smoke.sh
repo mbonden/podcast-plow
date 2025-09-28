@@ -36,6 +36,25 @@ fi
 
 echo "[smoke] Docker & Compose available; running minimal smoke."
 
+wait_for_postgres() {
+  local -r max_attempts=30
+  local attempt=1
+
+  echo "[smoke] Waiting for Postgres to accept connections..."
+  while (( attempt <= max_attempts )); do
+    if dc exec -T db pg_isready -U postgres -d podcast_plow >/dev/null 2>&1; then
+      echo "[smoke] Postgres is ready."
+      return 0
+    fi
+
+    sleep 1
+    (( attempt++ ))
+  done
+
+  echo "[smoke] Postgres did not become ready after $max_attempts attempts."
+  return 1
+}
+
 # --- Minimal but meaningful checks ---
 # Keep this light so it runs fast in CI.
 
@@ -45,6 +64,8 @@ dc config -q
 
 # Bring up only the pieces needed for a quick check
 dc up -d --build db ingest
+
+wait_for_postgres
 
 # Quick health checks
 dc ps
