@@ -435,7 +435,20 @@ def discover(
 
 @jobs_app.command("work")
 def work(
-    loop: bool = typer.Option(False, "--loop/--once", help="Continuously poll for queued jobs"),
+    loop: bool = typer.Option(
+        False,
+        "--loop",
+        help="Continuously poll for queued jobs",
+        is_flag=True,
+        show_default=False,
+    ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Process a single job before exiting (default behavior)",
+        is_flag=True,
+        show_default=False,
+    ),
     poll_interval: float = typer.Option(
         5.0,
         "--poll-interval",
@@ -458,7 +471,13 @@ def work(
     ),
 ) -> None:
     poll_interval = max(poll_interval, 0.1)
-    should_loop = loop
+
+    if loop and once:
+        raise typer.BadParameter(
+            "--loop and --once cannot be used together", param_hint="--loop/--once"
+        )
+
+    should_loop = loop and not once
 
     remaining: Optional[int]
     if should_loop:
