@@ -213,20 +213,19 @@ def _process_job(conn, job: jobs_service.Job) -> None:
 def enqueue_summarize(
     episode_ids: str = typer.Option(
         ...,
-        "--episode-ids",
         "-e",
+        "--episode-ids",
         help="Comma separated list of episode ids",
     ),
     priority: int = typer.Option(
         0,
-        "--priority",
         "-p",
+        "--priority",
         help="Higher numbers run before lower priority",
     ),
     refresh: bool = typer.Option(
         False,
-        "--refresh",
-        is_flag=True,
+        "--refresh/--no-refresh",
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
@@ -246,20 +245,19 @@ def enqueue_summarize(
 def enqueue_extract_claims(
     episode_ids: str = typer.Option(
         ...,
-        "--episode-ids",
         "-e",
+        "--episode-ids",
         help="Comma separated list of episode ids",
     ),
     priority: int = typer.Option(
         0,
-        "--priority",
         "-p",
+        "--priority",
         help="Higher numbers run before lower priority",
     ),
     refresh: bool = typer.Option(
         False,
-        "--refresh",
-        is_flag=True,
+        "--refresh/--no-refresh",
         help="Rebuild transcript chunks before extracting",
     ),
 ) -> None:
@@ -289,8 +287,8 @@ def enqueue_auto_grade(
     ),
     priority: int = typer.Option(
         0,
-        "--priority",
         "-p",
+        "--priority",
         help="Higher numbers run before lower priority",
     ),
 ) -> None:
@@ -317,11 +315,10 @@ def enqueue_auto_grade(
 
 @enqueue_app.command("summarize-latest")
 def enqueue_summarize_latest(
-    limit: int = typer.Option(5, "--limit", "-n", min=1, help="Number of episodes to enqueue"),
+    limit: int = typer.Option(5, "-n", "--limit", min=1, help="Number of episodes to enqueue"),
     refresh: bool = typer.Option(
         False,
-        "--refresh",
-        is_flag=True,
+        "--refresh/--no-refresh",
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
@@ -419,8 +416,7 @@ def list_jobs() -> None:
 def main(
     verbose: bool = typer.Option(
         False,
-        "--verbose",
-        is_flag=True,
+        "--verbose/--no-verbose",
         help="Enable debug logging",
     )
 ) -> None:
@@ -441,35 +437,33 @@ def discover(
 def work(
     loop: bool = typer.Option(
         False,
-        "--loop",
+        "--loop/--no-loop",
         help="Continuously poll for queued jobs",
-        is_flag=True,
         show_default=False,
     ),
     once: bool = typer.Option(
         False,
-        "--once",
+        "--once/--no-once",
         help="Process a single job before exiting (default behavior)",
-        is_flag=True,
         show_default=False,
     ),
     poll_interval: float = typer.Option(
         5.0,
-        "--poll-interval",
         "-i",
+        "--poll-interval",
         help="Seconds to wait between polls when idle",
     ),
     job_types: List[str] = typer.Option(
         [],
+        "-t",
         "--job-type",
         "--type",
-        "-t",
         help="Only process jobs matching the provided type. Use multiple --job-type options to allow more than one type.",
     ),
     max_jobs: Optional[int] = typer.Option(
         None,
-        "--max-jobs",
         "-n",
+        "--max-jobs",
         min=1,
         help="Maximum number of jobs to process before exiting",
     ),
@@ -535,7 +529,7 @@ app.command("work")(work)
 
 @app.command("fetch-transcripts")
 def fetch_transcripts(
-    limit: Optional[int] = typer.Option(None, "--limit", "-l", min=1, help="Only process the most recent N episodes"),
+    limit: Optional[int] = typer.Option(None, "-l", "--limit", min=1, help="Only process the most recent N episodes"),
 ) -> None:
     """Fetch and store transcripts using lightweight heuristics."""
 
@@ -545,7 +539,7 @@ def fetch_transcripts(
 
 @app.command("discover-youtube")
 def discover_youtube(
-    limit: Optional[int] = typer.Option(100, "--limit", "-l", min=1, help="Only scan the most recent N episodes"),
+    limit: Optional[int] = typer.Option(100, "-l", "--limit", min=1, help="Only scan the most recent N episodes"),
 ) -> None:
     """Populate missing YouTube URLs using show notes heuristics."""
 
@@ -555,11 +549,10 @@ def discover_youtube(
 
 @app.command()
 def summarize(
-    limit: Optional[int] = typer.Option(None, "--limit", "-l", min=1, help="Only summarise the most recent N episodes"),
+    limit: Optional[int] = typer.Option(None, "-l", "--limit", min=1, help="Only summarise the most recent N episodes"),
     refresh: bool = typer.Option(
         False,
-        "--refresh",
-        is_flag=True,
+        "--refresh/--no-refresh",
         help="Replace any existing summaries",
     ),
 ) -> None:
@@ -571,11 +564,10 @@ def summarize(
 
 @app.command("summarize-episode")
 def summarize_episode(
-    episode_id: int = typer.Option(..., "--episode-id", "-e", help="Episode id to summarise"),
+    episode_id: int = typer.Option(..., "-e", "--episode-id", help="Episode id to summarise"),
     refresh: bool = typer.Option(
         False,
-        "--refresh",
-        is_flag=True,
+        "--refresh/--no-refresh",
         help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
