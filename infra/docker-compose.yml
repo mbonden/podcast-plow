@@ -62,5 +62,13 @@ services:
       - ./feeds.txt:/infra/feeds.txt:ro
     command: ["sleep", "infinity"]
 
+  worker:
+    image: podcast-plow-server
+    depends_on:
+      - db
+    command: >
+      bash -lc "PYTHONPATH=/app:/workspace:/workspace/server:/workspace/worker
+                python /app/manage.py jobs work --loop"
+
 volumes:
   db_data:
