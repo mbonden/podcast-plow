@@ -78,8 +78,10 @@ def test_jobs_work_once_processes_summarize_job(
     assert work_result.exit_code == 0
 
     job_row = fake_db.tables["job_queue"][0]
-    assert job_row["status"] == "done"
-    progress = job_row.get("result")
+    assert job_row["status"] == "finished"
+    payload = job_row.get("payload_json") or {}
+    assert isinstance(payload, dict)
+    progress = payload.get("progress") or {}
     assert isinstance(progress, dict)
     assert progress.get("completed_chunks") == progress.get("total_chunks")
 

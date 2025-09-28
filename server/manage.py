@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import pathlib
 import sys
 import time
 from pathlib import Path
@@ -8,9 +9,14 @@ from typing import Any, Iterable, List, Optional
 
 import typer
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-if str(PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(PACKAGE_ROOT))
+ROOT = pathlib.Path(__file__).resolve().parent
+for path in {ROOT, ROOT / "server", ROOT / "worker"}:
+    sys.path.append(str(path))
+
+WORKSPACE_ROOT = pathlib.Path("/workspace")
+if WORKSPACE_ROOT.exists():
+    for path in {WORKSPACE_ROOT, WORKSPACE_ROOT / "server", WORKSPACE_ROOT / "worker"}:
+        sys.path.append(str(path))
 
 from server.db.utils import db_conn
 from server.ingest import feeds as feeds_module
@@ -225,38 +231,103 @@ def enqueue_auto_grade(
     typer.echo(f"Enqueued auto-grade job {job.id} targeting linked claims.")
 
 
-@jobs_app.command("list")
-def list_jobs(
-    status: Optional[str] = typer.Option(
-        None,
-        "--status",
-        "-s",
-        help="Only show jobs with the provided status (queued, running, failed, done)",
-    ),
-    limit: Optional[int] = typer.Option(
-        None,
-        "--limit",
-        "-l",
-        min=1,
-        help="Restrict the number of jobs displayed",
+@enqueue_app.command("summarize-latest")
+def enqueue_summarize_latest(
+    limit: int = typer.Option(5, "--limit", "-n", min=1, help="Number of episodes to enqueue"),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh/--no-refresh",
+        help="Regenerate transcript chunks before summarising",
     ),
 ) -> None:
-    normalized_status = status.strip().lower() if status else None
-    if normalized_status not in {None, "queued", "running", "failed", "done"}:
-        raise typer.BadParameter("Status must be one of queued, running, failed, or done")
-
     with db_conn() as conn:
-        jobs = jobs_service.list_jobs(conn, status=normalized_status, limit=limit)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM episode
+                ORDER BY published_at DESC NULLS LAST, id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
 
-    if not jobs:
-        typer.echo("No jobs match the provided filters.")
-        return
+        if not rows:
+            typer.echo("No recent episodes available to enqueue.")
+            return
 
-    for job in jobs:
-        run_at = job.run_at.isoformat() if job.run_at else "?"
-        typer.echo(
-            f"[{job.id}] {job.job_type} ({job.status}) priority={job.priority} run_at={run_at}"
+        enqueued = 0
+        for row in rows:
+            episode_id = row[0] if not isinstance(row, dict) else int(row.get("id"))
+            jobs_service.enqueue_job(
+                conn,
+                job_type="summarize",
+                payload={"episode_id": int(episode_id), "refresh": refresh},
+            )
+            enqueued += 1
+
+    typer.echo(f"Enqueued {enqueued} summarisation job(s).")
+
+
+@jobs_app.command("list")
+def list_jobs() -> None:
+    with db_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, COUNT(*) FROM job_queue GROUP BY status ORDER BY status"
+            )
+            counts = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT id, job_type, run_at
+                FROM job_queue
+                WHERE status = 'queued' AND run_at <= now()
+                ORDER BY priority DESC, run_at, id
+                LIMIT 1
+                """
+            )
+            next_row = cur.fetchone()
+
+            upcoming_row = None
+            if next_row is None:
+                cur.execute(
+                    """
+                    SELECT id, job_type, run_at
+                    FROM job_queue
+                    WHERE status = 'queued'
+                    ORDER BY run_at, priority DESC, id
+                    LIMIT 1
+                    """
+                )
+                upcoming_row = cur.fetchone()
+
+    typer.echo("Job counts by status:")
+    if counts:
+        for status, count in counts:
+            typer.echo(f"  {status}: {count}")
+    else:
+        typer.echo("  (no jobs queued)")
+
+    if next_row:
+        job_id, job_type_value, run_at_value = next_row
+        run_at_display = (
+            run_at_value.isoformat() if hasattr(run_at_value, "isoformat") else run_at_value
         )
+        typer.echo(
+            f"Next runnable job: id={job_id} type={job_type_value} run_at={run_at_display}"
+        )
+    elif upcoming_row:
+        job_id, job_type_value, run_at_value = upcoming_row
+        run_at_display = (
+            run_at_value.isoformat() if hasattr(run_at_value, "isoformat") else run_at_value
+        )
+        typer.echo(
+            f"Next scheduled job: id={job_id} type={job_type_value} run_at={run_at_display}"
+        )
+    else:
+        typer.echo("No queued jobs found.")
 
 
 @app.callback()
@@ -275,11 +346,14 @@ def discover(
 
 
 @jobs_app.command("work")
-
 def work(
     once: bool = typer.Option(False, "--once", help="Process a single job and then exit"),
-    loop: bool = typer.Option(False, "--loop", help="Continuously poll for new jobs"),
-    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds to wait between polls when idle"),
+    loop: bool = typer.Option(False, "--loop", help="Continuously poll for queued jobs"),
+    poll_interval: float = typer.Option(
+        5.0,
+        "--poll-interval",
+        help="Seconds to wait between polls when idle",
+    ),
     job_type: Optional[List[str]] = typer.Option(
         None,
         "--type",
@@ -288,22 +362,27 @@ def work(
     ),
     max_jobs: Optional[int] = typer.Option(
         None,
-        "--max",
+        "--max-jobs",
         min=1,
-        help="Maximum number of jobs to process before exiting.",
+        help="Maximum number of jobs to process before exiting",
     ),
 ) -> None:
     if once and loop:
         raise typer.BadParameter("Choose either --once or --loop, not both")
+
     if not once and not loop:
-        raise typer.BadParameter("Specify either --once or --loop")
+        once = True
 
     poll_interval = max(poll_interval, 0.1)
     should_loop = loop
 
-    remaining: Optional[int] = max_jobs
+    remaining: Optional[int]
     if once:
-        remaining = 1 if remaining is None else min(remaining, 1)
+        remaining = 1
+        if max_jobs is not None:
+            remaining = min(remaining, max_jobs)
+    else:
+        remaining = max_jobs
 
     job_types: List[str] = []
     if job_type:
@@ -314,13 +393,13 @@ def work(
 
     while True:
         if remaining is not None and remaining <= 0:
+            logger.info("Reached max-jobs limit; exiting")
             break
 
-        job: jobs_service.Job | None = None
+        job: jobs_service.Job | None
         with db_conn() as conn:
             job = jobs_service.dequeue_job(conn, job_types=job_types or None)
             if job is None:
-                # Close connection before potentially sleeping
                 pass
             else:
                 logger.info("Processing job %s (%s)", job.id, job.job_type)
