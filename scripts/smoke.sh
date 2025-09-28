@@ -77,6 +77,30 @@ dc exec -T ingest bash -lc "python /app/manage.py --help"
 # (Comment out if you prefer not to touch data)
 # dc exec -T ingest bash -lc "python /app/manage.py jobs list || true"
 
+echo "[smoke] Enqueuing one summarize job for the newest episode…"
+EP_ID=$(dc exec -T db psql -U postgres -d podcast_plow -Atc \
+  "SELECT id FROM episode ORDER BY published_at DESC NULLS LAST LIMIT 1;")
+
+if [ -n "$EP_ID" ]; then
+  dc exec -T ingest bash -lc '
+    PYTHONPATH=/app:/workspace:/workspace/server:/workspace/worker \
+    python /app/manage.py jobs enqueue summarize --episode-ids '"$EP_ID"'
+  '
+
+  echo "[smoke] Working exactly one job…"
+  dc exec -T ingest bash -lc '
+    PYTHONPATH=/app:/workspace:/workspace/server:/workspace/worker \
+    python /app/manage.py jobs work --once
+  '
+
+  echo "[smoke] Verifying a summary row exists…"
+  dc exec -T db psql -U postgres -d podcast_plow -c \
+    "SELECT episode_id, LEFT(tl_dr, 60) FROM episode_summary ORDER BY id DESC LIMIT 3;"
+else
+  echo "[smoke] No episodes found to summarize; skipping E2E."
+fi
+
+
 popd >/dev/null
 
 # Optional teardown: opt-in to cleanups
