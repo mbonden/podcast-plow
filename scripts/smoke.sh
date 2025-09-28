@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Windows Git Bash guard: prevent MSYS path mangling of /app/... args ---
+if [[ -n "$MSYSTEM" || "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+  export MSYS_NO_PATHCONV=1
+  export MSYS2_ARG_CONV_EXCL="*"
+fi
+
 
 # Optional: verbose mode
 if [[ "${SMOKE_DEBUG:-}" == "1" ]]; then
